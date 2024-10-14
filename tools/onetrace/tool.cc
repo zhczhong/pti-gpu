@@ -276,10 +276,12 @@ static TraceOptions ReadArgs() {
   return TraceOptions(flags, log_file);
 }
 
+PTI_EXPORT
 void EnableProfiling() {
   tracer = UnifiedTracer::Create(ReadArgs());
 }
 
+PTI_EXPORT
 void DisableProfiling() {
   if (tracer != nullptr) {
     delete tracer;

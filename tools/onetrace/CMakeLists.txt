@@ -9,7 +9,6 @@ SetBuildType()
 # Tool Library
 
 add_library(onetrace_tool SHARED
-  "${PROJECT_SOURCE_DIR}/../../loader/init.cc"
   "${PROJECT_SOURCE_DIR}/../cl_tracer/cl_ext_collector.cc"
   "${PROJECT_SOURCE_DIR}/../utils/correlator.cc"
   "${PROJECT_SOURCE_DIR}/../../utils/trace_guard.cc"
