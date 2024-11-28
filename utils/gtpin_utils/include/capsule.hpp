@@ -13,6 +13,63 @@
 #define INVALID_NUM static_cast<size_t>(-1)
 #define DEFAULT_MATH_WIDTH_BYTES 4
 
+// #define ENABLE_MACRO_TRACING /// disabled by default, use for debug & new HW enabling
+#ifdef ENABLE_MACRO_TRACING
+#include <iostream>
+
+#define MACRO_TRACING_IMM_SUFFIX "_i "
+#define MACRO_TRACING_REG_SUFFIX "_r "
+
+#define MACRO_TRACING_COMMON                                                          \
+  std::cerr << "MACRO_TRACING " << __FUNCTION__ << "(" << execMask.ExecSize() << "|M" \
+            << execMask.ChannelOffset() << ") "
+
+#define MACRO_TRACING_COMMON_MATH \
+  MACRO_TRACING_COMMON << dst.DataType().ToString() << MACRO_TRACING_REG_SUFFIX
+
+#define MACRO_TRACING_3I                                                               \
+  MACRO_TRACING_COMMON_MATH << src0.DataType().ToString() << MACRO_TRACING_REG_SUFFIX  \
+                            << srcI1.DataType().ToString() << MACRO_TRACING_IMM_SUFFIX \
+                            << std::endl;
+
+#define MACRO_TRACING_3                                                               \
+  MACRO_TRACING_COMMON_MATH << src0.DataType().ToString() << MACRO_TRACING_REG_SUFFIX \
+                            << src1.DataType().ToString() << MACRO_TRACING_REG_SUFFIX \
+                            << std::endl;
+
+#define MACRO_TRACING_2I \
+  MACRO_TRACING_COMMON_MATH << srcI1.DataType().ToString() << MACRO_TRACING_IMM_SUFFIX << std::endl;
+
+#define MACRO_TRACING_2 \
+  MACRO_TRACING_COMMON_MATH << src0.DataType().ToString() << MACRO_TRACING_REG_SUFFIX << std::endl;
+
+#define MACRO_TRACING_MEMORY \
+  MACRO_TRACING_COMMON << "A" << addrReg.ElementSize() * 8 << MACRO_TRACING_REG_SUFFIX << std::endl;
+
+#else
+#define MACRO_TRACING_IMM_SUFFIX ""
+#define MACRO_TRACING_REG_SUFFIX ""
+
+#define MACRO_TRACING_COMMON execMask;
+
+#define MACRO_TRACING_COMMON_MATH MACRO_TRACING_COMMON dst;
+
+#define MACRO_TRACING_3I          \
+  MACRO_TRACING_COMMON_MATH src0; \
+  srcI1;
+
+#define MACRO_TRACING_3           \
+  MACRO_TRACING_COMMON_MATH src0; \
+  src1;
+
+#define MACRO_TRACING_2I MACRO_TRACING_COMMON_MATH srcI1;
+
+#define MACRO_TRACING_2 MACRO_TRACING_COMMON_MATH src0;
+
+#define MACRO_TRACING_MEMORY MACRO_TRACING_COMMON addrReg;
+
+#endif
+
 #include <api/gtpin_api.h>
 
 #include <type_traits>
@@ -75,20 +132,20 @@ GtReg GetSubReg(size_t regNum, size_t subRegIdx, size_t subRegSizeBytes, size_t 
 GtGenProcedure Mov(const IGtKernelInstrument& instrumentor, const GtDstRegion& dst,
                    const GtRegRegion& src, GtExecMask execMask = EXEC_MASK_1_0,
                    GtPredicate predicate = GtPredicate::MakeNone());
-GtGenProcedure Mov(const IGtKernelInstrument& instrumentor, const GtDstRegion& dst, const GtImm& srcI,
-                   GtExecMask execMask = EXEC_MASK_1_0,
+GtGenProcedure Mov(const IGtKernelInstrument& instrumentor, const GtDstRegion& dst,
+                   const GtImm& srcI, GtExecMask execMask = EXEC_MASK_1_0,
                    GtPredicate predicate = GtPredicate::MakeNone());
 GtGenProcedure Not(const IGtKernelInstrument& instrumentor, const GtDstRegion& dst,
                    const GtRegRegion& src, GtExecMask execMask = EXEC_MASK_1_0,
                    GtPredicate predicate = GtPredicate::MakeNone());
-GtGenProcedure Not(const IGtKernelInstrument& instrumentor, const GtDstRegion& dst, const GtImm& srcI,
-                   GtExecMask execMask = EXEC_MASK_1_0,
+GtGenProcedure Not(const IGtKernelInstrument& instrumentor, const GtDstRegion& dst,
+                   const GtImm& srcI, GtExecMask execMask = EXEC_MASK_1_0,
                    GtPredicate predicate = GtPredicate::MakeNone());
 GtGenProcedure Cbit(const IGtKernelInstrument& instrumentor, const GtDstRegion& dst,
                     const GtRegRegion& src, GtExecMask execMask = EXEC_MASK_1_0,
                     GtPredicate predicate = GtPredicate::MakeNone());
-GtGenProcedure Cbit(const IGtKernelInstrument& instrumentor, const GtDstRegion& dst, const GtImm& srcI,
-                    GtExecMask execMask = EXEC_MASK_1_0,
+GtGenProcedure Cbit(const IGtKernelInstrument& instrumentor, const GtDstRegion& dst,
+                    const GtImm& srcI, GtExecMask execMask = EXEC_MASK_1_0,
                     GtPredicate predicate = GtPredicate::MakeNone());
 GtGenProcedure Add(const IGtKernelInstrument& instrumentor, const GtDstRegion& dst,
                    const GtRegRegion& src0, const GtRegRegion& src1,
@@ -195,39 +252,30 @@ GtGenProcedure AtomicStore(const IGtKernelInstrument& instrumentor, GtProfileArr
                            GtReg offsetBytesReg = NullReg(),
                            GtPredicate predicate = GtPredicate::MakeNone());
 
-GtGenProcedure ComputeSimdMask(const IGtKernelInstrument& instrumentor, GtReg simdMaskReg, bool maskCtrl,
-                               uint32_t execMask, GtPredicate pred);
+GtGenProcedure ComputeSimdMask(const IGtKernelInstrument& instrumentor, GtReg simdMaskReg,
+                               bool maskCtrl, uint32_t execMask, GtPredicate pred);
 GtGenProcedure ComputeSimdMask(const IGtKernelInstrument& instrumentor, GtReg simdMaskReg,
                                const IGtIns& gtpinIns);
-/**
- * Calculation goes in 16 bits due to no need in all 64 bits. The only need in
- * lower 6 bits Result in tempData1Reg reg. 0 - for not CL aligned, !=0 for CL
- * aligned and channel active
- */
-GtGenProcedure IsCacheLineAligned(const IGtKernelInstrument& instrumentor, GtReg addrRegCheckReg,
-                                  size_t channelOffset, GtReg simdMaskReg, GtReg tempData1Reg,
-                                  GtReg tempData2Reg, size_t mathWidthBytes = 2);
-GtGenProcedure IsCacheLineAligned(const IGtKernelInstrument& instrumentor, const IGtIns& gtpinIns,
-                                  GtReg simdMaskReg, GtReg tempData1Reg, GtReg tempData2Reg,
-                                  size_t mathWidthBytes = 2);
+
 /**
  * Faster, but requires flag register. Result in tempData1Reg.
  * tempData1Reg = 1 in case of active and aligned, 0 otherwise.
  * Checks that SIMD lane 0 is active and cache line is aligned (lower 6 bits of address are 0).
  */
-GtGenProcedure IsCacheLineAlignedFlag(const IGtKernelInstrument& instrumentor, GtReg addrRegCheckReg,
-                                      size_t channelOffset, GtReg simdMaskReg, GtReg tempData1Reg,
-                                      GtReg flagReg = FlagReg(0));
+GtGenProcedure IsCacheLineAligned(const IGtKernelInstrument& instrumentor, GtReg addrRegCheckReg,
+                                  size_t channelOffset, GtReg simdMaskReg, GtReg tempData1Reg,
+                                  GtReg flagReg = FlagReg(0));
 
-GtGenProcedure IsCacheLineAlignedFlag(const IGtKernelInstrument& instrumentor, const IGtIns& gtpinIns,
-                                      GtReg simdMaskReg, GtReg tempData1Reg,
-                                      GtReg flagReg = FlagReg(0));
+GtGenProcedure IsCacheLineAligned(const IGtKernelInstrument& instrumentor, const IGtIns& gtpinIns,
+                                  GtReg simdMaskReg, GtReg tempData1Reg,
+                                  GtReg flagReg = FlagReg(0));
 
 GtGenProcedure CalcBaseAddr(const IGtKernelInstrument& instrumentor, GtProfileArray& profileArray,
                             GtReg baseAddrReg, size_t recordIndex, size_t numTiles);
 
-GtGenProcedure AdjustDistributionWithinBounds(const IGtKernelInstrument& instrumentor, GtReg valueReg,
-                                              size_t bucketsNum, GtReg flagReg = FlagReg(0));
+GtGenProcedure AdjustDistributionWithinBounds(const IGtKernelInstrument& instrumentor,
+                                              GtReg valueReg, size_t bucketsNum,
+                                              GtReg flagReg = FlagReg(0));
 
 GtGenProcedure CacheLinesCount(const IGtKernelInstrument& instrumentor, GtReg clCounterReg,
                                GtReg simdMaskReg, uint32_t execSize, GtReg addrRegCheckReg,

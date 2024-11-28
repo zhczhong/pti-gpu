@@ -42,13 +42,15 @@ inline void PrintDeviceList() {
   ze_result_t status = zeInit(ZE_INIT_FLAG_GPU_ONLY);
   if (status != ZE_RESULT_SUCCESS) {
     std::cerr << "[ERROR] Failed to initialize Level Zero runtime" << std::endl;
-    std::cerr << "Please make sure /proc/sys/dev/i915/perf_stream_paranoid is set to 0." << std::endl;
+#ifndef _WIN32
+    std::cerr << "[INFO] Please ensure that either /proc/sys/dev/i915/perf_stream_paranoid or /proc/sys/dev/xe/observation_paranoid are set to 0." << std::endl;
+#endif /* _WIN32 */
     return;
   }
   
   std::vector<ze_device_handle_t> device_list = utils::ze::GetDeviceList();
   if (device_list.empty()) {
-    std::cout << "[WARNING] No device found" << std::endl;
+    std::cout << "[WARNING] No devices found" << std::endl;
     return;
   }
 
@@ -88,7 +90,9 @@ inline void PrintMetricList(uint32_t device_id) {
   ze_result_t status = zeInit(ZE_INIT_FLAG_GPU_ONLY);
   if (status != ZE_RESULT_SUCCESS) {
     std::cerr << "[ERROR] Failed to initialize Level Zero runtime" << std::endl;
-    std::cerr << "Please make sure /proc/sys/dev/i915/perf_stream_paranoid is set to 0." << std::endl;
+#ifndef _WIN32
+    std::cerr << "[INFO] Please ensure that either /proc/sys/dev/i915/perf_stream_paranoid or /proc/sys/dev/xe/observation_paranoid are set to 0." << std::endl;
+#endif /* _WIN32 */
     return;
   }
 
@@ -531,7 +535,7 @@ class ZeMetricProfiler {
         std::map<uint64_t, std::pair<std::string, size_t>> kprops;
         int max_kname_size = 0;
         // enumerate all kernel property files
-        for (const auto& e: CXX_FILESYSTEM_NAMESPACE::directory_iterator(CXX_FILESYSTEM_NAMESPACE::path(data_dir_name_))) {
+        for (const auto& e: CXX_STD_FILESYSTEM_NAMESPACE::directory_iterator(CXX_STD_FILESYSTEM_NAMESPACE::path(data_dir_name_))) {
           // kernel properties file path: <data_dir>/.kprops.<device_id>.<pid>.txt
           if (e.path().filename().string().find(".kprops." + std::to_string(it->second->device_id_)) == 0) {
             std::ifstream kpf = std::ifstream(e.path());
@@ -733,7 +737,7 @@ class ZeMetricProfiler {
       else {
         std::vector<ZeKernelInfo> kinfo;
         // enumerate all kernel time files
-        for (const auto& e: CXX_FILESYSTEM_NAMESPACE::directory_iterator(CXX_FILESYSTEM_NAMESPACE::path(data_dir_name_))) {
+        for (const auto& e: CXX_STD_FILESYSTEM_NAMESPACE::directory_iterator(CXX_STD_FILESYSTEM_NAMESPACE::path(data_dir_name_))) {
           // kernel properties file path: <data_dir>/.ktime.<device_id>.<pid>.txt
           if (e.path().filename().string().find(".ktime." + std::to_string(it->second->device_id_)) == 0) {
             std::ifstream kf = std::ifstream(e.path());
@@ -1033,8 +1037,10 @@ class ZeMetricProfiler {
     zet_metric_streamer_desc_t streamer_desc = {ZET_STRUCTURE_TYPE_METRIC_STREAMER_DESC, nullptr, max_metric_samples, interval};
     status = zetMetricStreamerOpen(context, device, group, &streamer_desc, event, &streamer);
     if (status != ZE_RESULT_SUCCESS) {
-      std::cerr << "[ERROR] Failed to open metric streamer (" << status << "). The sampling interval might be too small." << std::endl;
-      std::cerr << "Please also make sure /proc/sys/dev/i915/perf_stream_paranoid is set to 0." << std::endl;
+      std::cerr << "[WARNING] Unable to open metric streamer for sampling (" << status << "). The sampling interval might be too small or another sampling instance is active." << std::endl;
+#ifndef _WIN32
+      std::cerr << "[INFO] Please also make sure /proc/sys/dev/i915/perf_stream_paranoid is set to 0." << std::endl;
+#endif /* _WIN32 */
 
       status = zeEventDestroy(event);
       PTI_ASSERT(status == ZE_RESULT_SUCCESS);

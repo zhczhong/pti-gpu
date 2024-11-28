@@ -46,14 +46,15 @@ GtGenProcedure MovTgl(const IGtKernelInstrument& instrumentor, const GtDstRegion
   return proc;
 }
 
-std::map<GED_MODEL, GtGenProcedure (*)(const IGtKernelInstrument&, const GtDstRegion&, const GtRegRegion&,
-                                       GtExecMask, GtPredicate)>
+std::map<GED_MODEL, GtGenProcedure (*)(const IGtKernelInstrument&, const GtDstRegion&,
+                                       const GtRegRegion&, GtExecMask, GtPredicate)>
     MovFunctionsTable = {
         {GED_MODEL_TGL, &MovTgl},
 };
 
 GtGenProcedure Macro::Mov(const IGtKernelInstrument& instrumentor, const GtDstRegion& dst,
                           const GtRegRegion& src0, GtExecMask execMask, GtPredicate predicate) {
+  MACRO_TRACING_2
   PTI_ASSERT(dst.DataType().Size() >= src0.DataType().Size() &&
              "Destination size should be no less than source size");
 
@@ -78,9 +79,10 @@ dst: register, src0: immediate
 
 GtGenProcedure MoviTgl(const IGtKernelInstrument& instrumentor, const GtDstRegion& dst,
                        const GtImm& srcI1, GtExecMask execMask, GtPredicate predicate) {
+  GtGenProcedure proc;
+  IGtInsFactory& insF = instrumentor.Coder().InstructionFactory();
+
   if (srcI1.DataType().Size() == 1 && dst.DataType().Size() == 1) {
-    GtGenProcedure proc;
-    IGtInsFactory& insF = instrumentor.Coder().InstructionFactory();
     auto& coder = instrumentor.Coder();
     auto& vregs = coder.VregFactory();
     GtReg tmpReg = vregs.MakeScratch(VREG_TYPE_WORD);
@@ -92,8 +94,6 @@ GtGenProcedure MoviTgl(const IGtKernelInstrument& instrumentor, const GtDstRegio
   }
 
   if (dst.DataType().Size() == 8) {
-    GtGenProcedure proc;
-    IGtInsFactory& insF = instrumentor.Coder().InstructionFactory();
     // mov low
     GtReg dstL = {dst.Reg(), 4, 0};
     GtReg dstH = {dst.Reg(), 4, 1};
@@ -105,9 +105,7 @@ GtGenProcedure MoviTgl(const IGtKernelInstrument& instrumentor, const GtDstRegio
     return proc;
   }
 
-  IGtInsFactory& insF = instrumentor.Coder().InstructionFactory();
-  GtGenProcedure proc;
-  proc += insF.MakeMov(dst, GtImm(srcI1.Value(), dst.DataType())).SetPredicate(predicate);
+  proc += insF.MakeMov(dst, GtImm(srcI1.Value(), dst.DataType()), execMask).SetPredicate(predicate);
   return proc;
 }
 
@@ -146,13 +144,31 @@ GtGenProcedure MoviXeHpc(const IGtKernelInstrument& instrumentor, const GtDstReg
   return proc;
 }
 
+GtGenProcedure MoviXe2(const IGtKernelInstrument& instrumentor, const GtDstRegion& dst,
+                       const GtImm& srcI1, GtExecMask execMask, GtPredicate predicate) {
+  IGtInsFactory& insF = instrumentor.Coder().InstructionFactory();
+  GtGenProcedure proc;
+
+  if (srcI1.DataType().Size() == 1 && dst.DataType().Size() == 1) {
+    proc += insF.MakeMov(dst, GtImm(srcI1.Value(), Macro::GetGedIntDataTypeBytes(sizeof(uint16_t))))
+                .SetPredicate(predicate);
+    return proc;
+  }
+
+  proc += insF.MakeMov(dst, GtImm(srcI1.Value(), dst.DataType())).SetPredicate(predicate);
+  return proc;
+}
+
 std::map<GED_MODEL, GtGenProcedure (*)(const IGtKernelInstrument&, const GtDstRegion&, const GtImm&,
                                        GtExecMask, GtPredicate)>
-    MoviFunctionsTable = {
-        {GED_MODEL_TGL, &MoviTgl}, {GED_MODEL_XE_HP, &MoviXeHpc}, {GED_MODEL_XE_HPC, &MoviXeHpc}};
+    MoviFunctionsTable = {{GED_MODEL_TGL, &MoviTgl},
+                          {GED_MODEL_XE_HP, &MoviXeHpc},
+                          {GED_MODEL_XE_HPC, &MoviXeHpc},
+                          {GED_MODEL_XE2, &MoviXe2}};
 
 GtGenProcedure Macro::Mov(const IGtKernelInstrument& instrumentor, const GtDstRegion& dst,
                           const GtImm& srcI1, GtExecMask execMask, GtPredicate predicate) {
+  MACRO_TRACING_2I
   uint64_t mask = Macro::GetMaskBySizeBytes(dst.DataType().Size());
   PTI_ASSERT(srcI1.Value() <= mask && "Immediate value is too large for the destination size");
 
@@ -168,6 +184,6 @@ GtGenProcedure Macro::Mov(const IGtKernelInstrument& instrumentor, const GtDstRe
   IGtInsFactory& insF = instrumentor.Coder().InstructionFactory();
   GtGenProcedure proc;
 
-  proc += insF.MakeMov(dst, GtImm(srcI1, dst.DataType()), execMask).SetPredicate(predicate);
+  proc += insF.MakeMov(dst, srcI1, execMask).SetPredicate(predicate);
   return proc;
 }

@@ -21,7 +21,6 @@ extern "C" {
 /**
  * @brief const defines.
  */
-#define PTI_MAX_DEVICE_UUID_SIZE 16                         //!< Size of uuid array.
 #define PTI_MAX_PCI_ADDRESS_SIZE 16                         //!< Size of pci address array.
 #define PTI_INVALID_QUEUE_ID 0xFFFFFFFFFFFFFFFF-1           //!< For oneAPI versions earlier than 2024.1.1 -- UINT64_MAX-1
 
@@ -94,10 +93,10 @@ typedef enum _pti_view_external_kind {
 /**
  *  @brief Collection Overhead kinds
  */
-typedef enum _pti_view_overhead_kind { 
+typedef enum _pti_view_overhead_kind {
   PTI_VIEW_OVERHEAD_KIND_INVALID = 0,        //!< Invalid overhead kind
   PTI_VIEW_OVERHEAD_KIND_UNKNOWN = 1,        //!< Unknown overhead kind
-  PTI_VIEW_OVERHEAD_KIND_RESOURCE = 2,       //!< Overhead due to a resource 
+  PTI_VIEW_OVERHEAD_KIND_RESOURCE = 2,       //!< Overhead due to a resource
   PTI_VIEW_OVERHEAD_KIND_BUFFER_FLUSH = 3,   //!< Overhead due to a buffer flush
   PTI_VIEW_OVERHEAD_KIND_DRIVER = 4,         //!< Overhead due to driver
   PTI_VIEW_OVERHEAD_KIND_TIME = 5,           //!< Overhead due to L0 api processing time
@@ -261,7 +260,8 @@ typedef struct pti_view_record_overhead {
   pti_view_record_base _view_kind;          //!< Base record
   uint64_t _overhead_start_timestamp_ns;    //!< Overhead observation start timestamp, ns
   uint64_t _overhead_end_timestamp_ns;      //!< Overhead observation end timestamp, ns
-  uint64_t _overhead_thread_id;             //!< Thread ID of where the overhead observed
+  uint32_t _overhead_thread_id;             //!< Thread ID of where the overhead observed
+  uint32_t _api_id;                         //!< API id of the overhead
   uint64_t _overhead_count;                 //!< number of views in the overhead region
   uint64_t _overhead_duration_ns;           //!< Cumulative duration of the overhead over
                                             //!< the observation region, could be less than
@@ -272,6 +272,21 @@ typedef struct pti_view_record_overhead {
 
 
 /**
+ * @brief L0apicalls View record type
+ */
+typedef struct pti_view_record_zecalls {
+  pti_view_record_base _view_kind; //!< Base record
+  uint64_t _start_timestamp;       //!< L0 api call start timestamp, ns
+  uint64_t _end_timestamp;         //!< L0 api call end timestamp, ns
+  uint32_t _process_id;            //!< Process ID of where the zecall observed
+  uint32_t _thread_id;             //!< Thread ID of where the zecall observed
+  uint32_t _callback_id;           //!< Callback id of this zecall
+  uint32_t _correlation_id;        //!< Correlation id tracking memfill, memcpy and kernel gpu activity
+  ze_result_t _result;             //!< Result status of zecall
+} pti_view_record_zecalls;
+
+
+/**
  * @brief Function pointer for buffer completed
  *
  * @param buffer
@@ -279,9 +294,11 @@ typedef struct pti_view_record_overhead {
  * @param used_bytes
  * @return void
  */
+
 typedef void (*pti_fptr_buffer_completed)(unsigned char* buffer,
                                              size_t buffer_size_in_bytes,
                                              size_t used_bytes);
+
 
 /**
  * @brief Function pointer for buffer requested
@@ -418,6 +435,16 @@ typedef uint64_t (*pti_fptr_get_timestamp)( void );
  */
 pti_result PTI_EXPORT
 ptiViewSetTimestampCallback(pti_fptr_get_timestamp fptr_timestampRequested);
+
+/**
+ * @brief Gets callback id name for zeCalls api callback id to user -- the api callbackid is embedded in the pti_view_record_zecalls.
+ * Sample usage -  const char* pName = nullptr;
+ *              -  pti_result status = ptiViewGetCallbackIdName(rec._callback_id, &pName);
+ *
+ * @return pti_result
+ */
+pti_result PTI_EXPORT
+ptiViewGetCallbackIdName(uint32_t id, const char** name);
 
 #if defined(__cplusplus)
 }

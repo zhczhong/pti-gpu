@@ -9,7 +9,8 @@ USER root
 #hadolint ignore=DL3008
 RUN dnf update -y && \
     dnf install -y --setopt=tsflags=nodocs \
-    gcc-c++ procps-ng cmake wget ninja-build && dnf clean all
+    gcc-c++ procps-ng cmake wget ninja-build python3.12 git && \
+    dnf clean all
 
 #
 # Install oneAPI
@@ -21,23 +22,34 @@ RUN echo '[oneAPI]' > /etc/yum.repos.d/oneAPI.repo; \
     echo 'gpgcheck=1' >> /etc/yum.repos.d/oneAPI.repo; \
     echo 'repo_gpgcheck=1' >> /etc/yum.repos.d/oneAPI.repo; \
     echo 'gpgkey=https://yum.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB' >> /etc/yum.repos.d/oneAPI.repo && \
-    dnf install -y intel-basekit-2024.2.1-98 
+    dnf install -y intel-basekit-2025.0.0-884
 
 #
 # Setup the appropriate repos for GPU
 #
+# 11/14/2024 Hacking changes:
+# 1)-The dnf update -y pushes rhel to 9.5. To install ./intel-gpu-rhel-9.4.run
+# We must use the -f flag!
+# 2)-I was also forced to add --skip-broken --nobes
+#
 RUN wget https://repositories.intel.com/gpu/rhel/9.4/intel-gpu-rhel-9.4.run && \
   chmod +x intel-gpu-rhel-9.4.run && \
-  ./intel-gpu-rhel-9.4.run && \
+  ./intel-gpu-rhel-9.4.run -y -f && \
   dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
 
 RUN dnf install -y --setopt=tsflags=nodocs \
+  --skip-broken --nobest \
   intel-opencl intel-media libmfxgen1 libvpl2 \
   level-zero intel-level-zero-gpu mesa-dri-drivers mesa-vulkan-drivers \
   mesa-vdpau-drivers libdrm mesa-libEGL mesa-libgbm mesa-libGL \
-  mesa-libxatracker libvpl-tools intel-metrics-discovery \
-  intel-metrics-library intel-igc-core intel-igc-cm \
+  mesa-libxatracker libvpl-tools \
+  intel-igc-core intel-igc-cm \
   libva libva-utils intel-gmmlib libmetee intel-gsc intel-ocloc \
   intel-igc-opencl-devel level-zero-devel intel-gsc-devel libmetee-devel \
-  level-zero-devel && dnf clean all
+  level-zero-devel \
+  intel-metrics-discovery \
+  intel-metrics-discovery-devel \
+  intel-metrics-library \
+  intel-metrics-library-devel && \
+  dnf clean all
 

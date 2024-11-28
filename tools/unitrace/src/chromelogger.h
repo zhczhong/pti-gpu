@@ -23,8 +23,6 @@
 #include "unievent.h"
 #include "unimemory.h"
 
-#include "opencl/cl_ext_collector.h"
-
 #include "common_header.gen"
 
 static inline std::string GetHostName(void) {
@@ -92,8 +90,8 @@ typedef struct TraceDataPacket_ {
   uint64_t kernel_command_id;
   std::string name;
   std::string cname;
-  uint64_t ts;
-  uint64_t dur;
+  double ts;
+  double dur;
   std::string args;
   API_TRACING_ID api_id;
 
@@ -114,8 +112,8 @@ typedef struct TraceDataPacket_ {
       name = utils::Demangle(name.data());
     }
     else {
-      if ((cl_ext_api_id)api_id > clExtApiIdStartTraceId && (cl_ext_api_id)api_id < clExtApiIdEndTraceId) {
-        name = cl_ext_api_id_name[api_id - clExtApiIdStartTraceId - 1];
+      if ((cl_ext_api_id)api_id >= ClExtApiStart && (cl_ext_api_id)api_id < ClExtApiEnd) {
+        name = cl_ext_api[api_id - ClExtApiStart];
       } else if ((api_id != OpenClTracingId) && (api_id != XptiTracingId) && (api_id != IttTracingId) && (api_id != ZeKernelTracingId)) {
         // L0 kernel names are already demanged/
         name = get_symbol(api_id);
@@ -519,7 +517,6 @@ class TraceBuffer {
         }
         pkt.api_id = ZeKernelTracingId;
         pkt.ts = UniTimer::GetEpochTimeInUs(rec.start_time_);
-        //pkt.dur = UniTimer::GetEpochTimeInUs(rec.end_time_) - UniTimer::GetEpochTimeInUs(rec.start_time_);
         pkt.dur = UniTimer::GetTimeInUs(rec.end_time_ - rec.start_time_);
         pkt.cat = gpu_op;
         pkt.args = "\"id\": \"" + std::to_string(rec.kid_) + "\"";
@@ -538,7 +535,7 @@ class TraceBuffer {
           pkt.api_id = DepTracingId;
           pkt.id = rec.kid_;
           pkt.ts = UniTimer::GetEpochTimeInUs(rec.start_time_);
-          pkt.dur = (uint64_t)(-1);
+          pkt.dur = double((uint64_t)(-1));
           pkt.cat = data_flow;
           pkt.rank = mpi_rank;
           logger_->Log(pkt.Stringify());
@@ -552,7 +549,7 @@ class TraceBuffer {
           pkt.api_id = DepTracingId;
           pkt.id = rec.kid_;
           pkt.ts = UniTimer::GetEpochTimeInUs(rec.start_time_);
-          pkt.dur = (uint64_t)(-1);
+          pkt.dur = double((uint64_t)(-1));
           pkt.cat = data_flow_sync;
           pkt.rank = mpi_rank;
           logger_->Log(pkt.Stringify());
@@ -587,23 +584,6 @@ class TraceBuffer {
         pkt.ph = 'X';
         pkt.dur = UniTimer::GetTimeInUs(rec.end_time_ - rec.start_time_);
 
-/*
-        std::string str_kids = "";
-        if (kids == nullptr) {
-          str_kids = "0";
-        }
-        else {
-          int i = 0;
-          for (auto id : *kids) {
-            if (i != 0) {
-              str_kids += ",";
-            }
-            str_kids += std::to_string(id);
-            i++;
-          }
-        }
-        pkt.args = "\"id\": \"" + str_kids + "\"";
-*/
         if(rec.api_type_ == MPI) {
           MpiArgs args = rec.mpi_args_;
 
@@ -611,7 +591,6 @@ class TraceBuffer {
           std::string str_args = ""; // build arguments
 
           if (args.src_size != 0) {
-            str_args = "";
             str_args += "\"ssize\": " + std::to_string(args.src_size);
             str_args += ", \"src\": " + std::to_string(args.src_location);
             str_args += ", \"stag\": " + std::to_string(args.src_tag);
@@ -626,34 +605,38 @@ class TraceBuffer {
           }
 
           pkt.args = std::move(str_args);
+        } else if (rec.api_type_ == CCL) {
+          CclArgs& args = rec.ccl_args_;
+          std::string str_args = "\"ssize\": " + std::to_string(args.buff_size);
+          pkt.args = std::move(str_args);
         }
         pkt.cat = cpu_op;
       }
       else if (rec.type_ == EVENT_DURATION_START) {
         pkt.ph = 'B';
-        pkt.dur = (uint64_t)(-1);
+        pkt.dur = double((uint64_t)(-1));
         pkt.cat = cpu_op;
       }
       else if (rec.type_ == EVENT_DURATION_END) {
         pkt.ph = 'E';
-        pkt.dur = (uint64_t)(-1);
+        pkt.dur = double((uint64_t)(-1));
         pkt.cat = cpu_op;
       }
       else if (rec.type_ == EVENT_FLOW_SOURCE) {
         pkt.ph = 's';
         pkt.id = rec.id_;
-        pkt.dur = (uint64_t)(-1);
+        pkt.dur = double((uint64_t)(-1));
         pkt.cat = data_flow;
       }
       else if (rec.type_ == EVENT_FLOW_SINK) {
         pkt.ph = 't';
         pkt.id = rec.id_;
-        pkt.dur = (uint64_t)(-1);
+        pkt.dur = double((uint64_t)(-1));
         pkt.cat = data_flow_sync;
       }
       else if (rec.type_ == EVENT_MARK) {
         pkt.ph = 'R';
-        pkt.dur = (uint64_t)(-1);
+        pkt.dur = double((uint64_t)(-1));
         pkt.cat = cpu_op;
       }
       else {
@@ -664,7 +647,6 @@ class TraceBuffer {
       pkt.pid = GetPid();
       pkt.api_id = rec.api_id_;
       pkt.ts = UniTimer::GetEpochTimeInUs(rec.start_time_);
-      //pkt.dur = UniTimer::GetEpochTimeInUs(ended) - UniTimer::GetEpochTimeInUs(started);
       pkt.rank = mpi_rank;
       if(rec.name_ != nullptr) {
         pkt.name = std::string(rec.name_);
@@ -924,7 +906,7 @@ class ClTraceBuffer {
           pkt.api_id = DepTracingId;
           pkt.id = rec.kid_;
           pkt.ts = UniTimer::GetEpochTimeInUs(rec.start_time_);
-          pkt.dur = (uint64_t)(-1);
+          pkt.dur = double((uint64_t)(-1));
           pkt.cat = data_flow;
           pkt.rank = mpi_rank;
           logger_->Log(pkt.Stringify());
@@ -938,7 +920,7 @@ class ClTraceBuffer {
           pkt.api_id = DepTracingId;
           pkt.id = rec.kid_;
           pkt.ts = UniTimer::GetEpochTimeInUs(rec.start_time_);
-          pkt.dur = (uint64_t)(-1);
+          pkt.dur = double((uint64_t)(-1));
           pkt.cat = data_flow_sync;
           pkt.rank = mpi_rank;
           logger_->Log(pkt.Stringify());
@@ -972,51 +954,33 @@ class ClTraceBuffer {
       if (rec.type_ == EVENT_COMPLETE) {
         pkt.ph = 'X';
         pkt.dur = UniTimer::GetTimeInUs(rec.end_time_ - rec.start_time_);
-
-/*
-        std::string str_kids = "";
-        if (kids == nullptr) {
-          str_kids = "0";
-        }
-        else {
-          int i = 0;
-          for (auto id : *kids) {
-            if (i != 0) {
-              str_kids += ",";
-            }
-            str_kids += std::to_string(id);
-            i++;
-          }
-        }
-        pkt.args = "\"id\": \"" + str_kids + "\"";
-*/
         pkt.cat = cpu_op;
       }
       else if (rec.type_ == EVENT_DURATION_START) {
         pkt.ph = 'B';
-        pkt.dur = (uint64_t)(-1);
+        pkt.dur = double((uint64_t)(-1));
         pkt.cat = cpu_op;
       }
       else if (rec.type_ == EVENT_DURATION_END) {
         pkt.ph = 'E';
-        pkt.dur = (uint64_t)(-1);
+        pkt.dur = double((uint64_t)(-1));
         pkt.cat = cpu_op;
       }
       else if (rec.type_ == EVENT_FLOW_SOURCE) {
         pkt.ph = 's';
         pkt.id = rec.id_;
-        pkt.dur = (uint64_t)(-1);
+        pkt.dur = double((uint64_t)(-1));
         pkt.cat = data_flow;
       }
       else if (rec.type_ == EVENT_FLOW_SINK) {
         pkt.ph = 't';
         pkt.id = rec.id_;
-        pkt.dur = (uint64_t)(-1);
+        pkt.dur = double((uint64_t)(-1));
         pkt.cat = data_flow_sync;
       }
       else if (rec.type_ == EVENT_MARK) {
         pkt.ph = 'R';
-        pkt.dur = (uint64_t)(-1);
+        pkt.dur = double((uint64_t)(-1));
         pkt.cat = cpu_op;
       }
       else {
@@ -1027,7 +991,6 @@ class ClTraceBuffer {
       pkt.pid = GetPid();
       pkt.api_id = rec.api_id_;
       pkt.ts = UniTimer::GetEpochTimeInUs(rec.start_time_);
-      //pkt.dur = UniTimer::GetEpochTimeInUs(ended) - UniTimer::GetEpochTimeInUs(started);
       pkt.rank = mpi_rank;
       if(rec.name_ != nullptr) {
         pkt.name = std::string(rec.name_);
@@ -1374,6 +1337,27 @@ class ChromeLogger {
       }
     }
 
+    static void CclLoggingCallback(const char *name, uint64_t start_ts, uint64_t end_ts, uint64_t buff_size) {
+      if (!thread_local_buffer_.IsFinalized()) {
+        HostEventRecord *rec = thread_local_buffer_.GetHostEvent();
+
+        if (name != nullptr) {
+          rec->name_ = strdup(name);
+        } else {
+          rec->name_ = nullptr;
+        }
+
+        rec->type_ = EVENT_COMPLETE;
+        rec->api_id_ = IttTracingId;
+        rec->start_time_ = start_ts;
+        rec->end_time_ = end_ts;
+        rec->id_ = 0;
+        rec->api_type_ = CCL;
+        rec->ccl_args_.buff_size = buff_size;
+        thread_local_buffer_.BufferHostEvent();
+      }
+    }
+
     static void MpiLoggingCallback(const char *name, uint64_t start_ts, uint64_t end_ts,size_t src_size, int src_location, int src_tag,
                                      size_t dst_size, int dst_location, int dst_tag) {
       if (!thread_local_buffer_.IsFinalized()) {
@@ -1538,11 +1522,6 @@ class ChromeLogger {
           cl_thread_local_buffer_.BufferHostEvent();
         }
       }
-    }
-
-    static void ClExtChromeCallLoggingCallback(std::vector<uint64_t> *kids, FLOW_DIR flow_dir, const cl_ext_api_id api_id,
-      uint64_t started, uint64_t ended) {
-      ClChromeCallLoggingCallback(kids, flow_dir, (API_TRACING_ID)api_id, started, ended);
     }
 };
 

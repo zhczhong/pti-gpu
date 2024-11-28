@@ -24,6 +24,7 @@
 #include "pti/pti_view.h"
 #include "samples_utils.h"
 #include "utils.h"
+#include "utils/sycl_config_info.h"
 #include "utils/test_helpers.h"
 #include "ze_utils.h"
 
@@ -45,6 +46,7 @@ namespace {
 bool memory_view_record_created = false;
 bool kernel_view_record_created = false;
 bool sycl_runtime_record_created = false;
+bool sycl_spv_special_rec_seen = false;
 bool sycl_spv_kernel_seen = false;
 bool sycl_spv_mem_buffer_fill_seen = false;
 bool sycl_spv_mem_buffer_read_seen = false;
@@ -231,6 +233,19 @@ class MainUrFixtureTest : public ::testing::Test {
     // Cleanup work for each test
   }
 
+ public:
+  static void SetUpTestSuite() {  // Setup shared resource between tests (GPU)
+    try {
+      dev_ = sycl::device(sycl::gpu_selector_v);
+      if (pti::test::utils::IsIntegratedGraphics(dev_)) {
+        is_integrated_graphics = true;
+      }
+    } catch (const sycl::exception& e) {
+      FAIL() << "Unable to select valid device to run tests on. Check your hardware, driver "
+                "install, or system configuration.";
+    }
+  }
+
   void SetUp() override {  // Called right after constructor before each test
     buffer_cb_registered = true;
     requested_buffer_calls = 0;
@@ -240,6 +255,7 @@ class MainUrFixtureTest : public ::testing::Test {
     memory_view_record_created = false;
     kernel_view_record_created = false;
     sycl_runtime_record_created = false;
+    sycl_spv_special_rec_seen = false;
     sycl_spv_kernel_seen = false;
     sycl_spv_mem_buffer_fill_seen = false;
     sycl_spv_mem_buffer_read_seen = false;
@@ -320,6 +336,9 @@ class MainUrFixtureTest : public ::testing::Test {
               sycl_spv_mem_buffer_write_seen = true;
             } else if ((function_name.find("EnqueueMemBufferCopy") != std::string::npos)) {
               sycl_spv_mem_buffer_copy_seen = true;
+            } else if ((function_name.find("zeCommandListAppendLaunchKernel") !=
+                        std::string::npos)) {
+              sycl_spv_special_rec_seen = true;
             }
             break;
           }
@@ -429,6 +448,8 @@ class MainUrFixtureTest : public ::testing::Test {
     auto flush_results = ptiFlushAllViews();
     return flush_results;
   }
+  inline static bool is_integrated_graphics = false;
+  inline static sycl::device dev_;
 };
 
 TEST_F(MainUrFixtureTest, urGemmSpvKernelDetected) {
@@ -436,6 +457,7 @@ TEST_F(MainUrFixtureTest, urGemmSpvKernelDetected) {
   EXPECT_EQ(ptiViewSetCallbacks(BufferRequested, BufferCompleted), pti_result::PTI_SUCCESS);
   RunGemm(true);
   EXPECT_EQ(sycl_spv_kernel_seen, true);
+  EXPECT_EQ(sycl_spv_special_rec_seen, false);
   EXPECT_EQ(sycl_spv_mem_buffer_fill_seen, true);
 }
 
@@ -445,7 +467,8 @@ TEST_F(MainUrFixtureTest, syclGemmSpvRuntimeRecordsDetected) {
   EXPECT_EQ(ptiViewSetCallbacks(BufferRequested, BufferCompleted), pti_result::PTI_SUCCESS);
   RunGemm();
   EXPECT_EQ(sycl_spv_kernel_seen, true);
+  EXPECT_EQ(sycl_spv_special_rec_seen, false);
   EXPECT_EQ(sycl_spv_mem_buffer_read_seen, true);
-  EXPECT_EQ(sycl_spv_mem_buffer_write_seen, true);
   EXPECT_EQ(sycl_spv_mem_buffer_copy_seen, true);
+  if (!is_integrated_graphics) EXPECT_EQ(sycl_spv_mem_buffer_write_seen, true);
 }

@@ -15,8 +15,6 @@
 #include <sstream>
 #include <string>
 
-#include "cl_ext_collector.h"
-#include "cl_ext_callbacks.h"
 #include "trace_options.h"
 #include "logger.h"
 #include "utils.h"
@@ -64,7 +62,9 @@ class UniTracer {
     status = zeInit(ZE_INIT_FLAG_GPU_ONLY);
     if (status != ZE_RESULT_SUCCESS) {
       std::cerr << "[ERROR] Failed to initialize Level Zero runtime" << std::endl;
-      std::cerr << "Please make sure /proc/sys/dev/i915/perf_stream_paranoid is set to 0." << std::endl;
+#ifndef _WIN32
+      std::cerr << "[INFO] Please ensure that either /proc/sys/dev/i915/perf_stream_paranoid or /proc/sys/dev/xe/observation_paranoid are set to 0." << std::endl;
+#endif /* _WIN32 */
       exit(-1);
     }
 
@@ -88,7 +88,6 @@ class UniTracer {
     OnZeFunctionFinishCallback ze_fcallback = nullptr;
     OnClKernelFinishCallback cl_kcallback = nullptr;
     OnClFunctionFinishCallback cl_fcallback = nullptr;
-    OnClExtFunctionFinishCallback cl_extfcallback = nullptr;
     ZeCollector* ze_collector = nullptr;
     ClCollector* cl_gpu_collector = nullptr;
     ClCollector* cl_cpu_collector = nullptr;
@@ -100,6 +99,10 @@ class UniTracer {
     if (tracer->CheckOption(TRACE_CHROME_ITT_LOGGING) || tracer->CheckOption(TRACE_CCL_SUMMARY_REPORT)) {
         itt_collector = IttCollector::Create(ChromeLogger::IttLoggingCallback);
         if (itt_collector) {
+            auto value = utils::GetEnv("UNITRACE_ChromeCclLogging");
+            if (!value.empty() && value == "1") {
+              itt_collector->SetCclCallback(ChromeLogger::CclLoggingCallback);
+            }
             if (tracer->CheckOption(TRACE_CCL_SUMMARY_REPORT)) {
                 itt_collector->EnableCclSummary();
             }
@@ -128,7 +131,6 @@ class UniTracer {
         // also set fcallback functions
         ze_fcallback = ChromeLogger::ChromeCallLoggingCallback;
         cl_fcallback = ChromeLogger::ClChromeCallLoggingCallback;
-        cl_extfcallback = ChromeLogger::ClExtChromeCallLoggingCallback;
       }
       else if (tracer->CheckOption(TRACE_CHROME_DEVICE_LOGGING)) {
         ze_kcallback = ChromeLogger::ZeChromeKernelLoggingCallback;
@@ -151,7 +153,6 @@ class UniTracer {
       if (tracer->CheckOption(TRACE_CHROME_CALL_LOGGING)) {
         ze_fcallback = ChromeLogger::ChromeCallLoggingCallback;
         cl_fcallback = ChromeLogger::ClChromeCallLoggingCallback;
-        cl_extfcallback = ChromeLogger::ClExtChromeCallLoggingCallback;
       }
 
       collector_options.api_tracing = true;
@@ -176,9 +177,7 @@ class UniTracer {
     if (collector_options.kernel_tracing || collector_options.api_tracing) {
       if (tracer->CheckOption(TRACE_OPENCL)) {
         if (cl_cpu_device != nullptr) {
-          cl_cpu_collector = ClCollector::Create(
-              cl_cpu_device, &tracer->logger_,
-              collector_options, cl_kcallback, cl_fcallback, cl_extfcallback, tracer);
+          cl_cpu_collector = ClCollector::Create(cl_cpu_device, &tracer->logger_, collector_options, cl_kcallback, cl_fcallback, tracer);
           if (cl_cpu_collector == nullptr) {
             std::cerr <<
               "[WARNING] Unable to create kernel collector for CL CPU backend" <<
@@ -188,34 +187,23 @@ class UniTracer {
         }
   
         if (cl_gpu_device != nullptr) {
-          cl_gpu_collector = ClCollector::Create(
-              cl_gpu_device, &tracer->logger_,
-              collector_options, cl_kcallback, cl_fcallback, cl_extfcallback, tracer);
+          cl_gpu_collector = ClCollector::Create(cl_gpu_device, &tracer->logger_, collector_options, cl_kcallback, cl_fcallback, tracer);
           if (cl_gpu_collector == nullptr) {
-            std::cerr <<
-              "[WARNING] Unable to create kernel collector for CL GPU backend" <<
-              std::endl;
+            std::cerr << "[WARNING] Unable to create kernel collector for CL GPU backend" << std::endl;
           }
           tracer->cl_gpu_collector_ = cl_gpu_collector;
         }
   
-        if (cl_cpu_collector == nullptr &&
-            cl_gpu_collector == nullptr) {
+        if (cl_cpu_collector == nullptr && cl_gpu_collector == nullptr) {
           std::cerr << "[WARNING] Unable to trace any OpenCL kernels" << std::endl;
           delete tracer;
           return nullptr;
-        }
-  
-        if (cl_gpu_collector != nullptr || cl_cpu_collector != nullptr) {
-          ClExtCollector::Create(cl_cpu_collector, cl_gpu_collector);
         }
       }
   
       ze_collector = ZeCollector::Create(&tracer->logger_, collector_options, ze_kcallback, ze_fcallback, tracer);
       if (ze_collector == nullptr) {
-        std::cerr <<
-          "[WARNING] Unable to create kernel collector for L0 backend" <<
-          std::endl;
+        std::cerr << "[WARNING] Unable to create kernel collector for L0 backend" << std::endl;
       }
       tracer->ze_collector_ = ze_collector;
     }
@@ -233,7 +221,6 @@ class UniTracer {
 
     Report();
 
-    ClExtCollector::Destroy();
     if (cl_cpu_collector_ != nullptr) {
       cl_cpu_collector_->DisableTracing();
     }

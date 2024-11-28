@@ -19,7 +19,6 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin CACHE STRING "")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/lib CACHE STRING "")
 
 ProjectIsTopLevel()
-RemoveNDebugFlag()
 SetBuildType()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -60,6 +59,7 @@ set(PTI_INSTALL_LIC_DIR "${CMAKE_INSTALL_DOCDIR}")
 set(PTI_API_SOVERSION "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}")
 
 CheckSOVersion(${PTI_API_SOVERSION})
+CheckExperimentalFilesystem()
 
 if(PTI_DEBUG)
   add_compile_definitions(PTI_DEBUG)
@@ -101,6 +101,10 @@ find_package(Threads REQUIRED)
 configure_file(${PROJECT_SOURCE_DIR}/include/pti/pti_version.h.in
                ${PROJECT_BINARY_DIR}/include/pti/pti_version.h)
 
+# Generate file with configuration information above.
+configure_file(${PROJECT_SOURCE_DIR}/src/utils/platform_config.h.in
+               ${PROJECT_BINARY_DIR}/platform_config.h
+               @ONLY)
 
 # https://cmake.org/cmake/help/latest/guide/importing-exporting/index.html
 add_library(pti_all INTERFACE)
@@ -155,6 +159,7 @@ target_compile_definitions(
   pti
   PRIVATE $<$<TARGET_EXISTS:Xpti::xpti>:PTI_TRACE_SYCL>
           $<$<TARGET_EXISTS:LevelZero::level-zero>:PTI_LEVEL_ZERO=1>
+          $<$<CONFIG:Debug>:PTI_XPTI_FRAMEWORK_DISPATCHER_NAME=$<TARGET_FILE_NAME:Xpti::xpti>>
           $<IF:$<BOOL:${PTI_ENABLE_LOGGING}>,
           SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE,
           SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO>)
@@ -165,12 +170,12 @@ target_link_libraries(
   PRIVATE $<TARGET_NAME_IF_EXISTS:Xpti::xpti>
           LevelZero::level-zero
           spdlog::spdlog
-          ${CMAKE_DL_LIBS})
+          ${CMAKE_DL_LIBS}
+          ${FS_LIB})
 
 FindHeadersPath(
   pti "${PROJECT_SOURCE_DIR}/src/levelzero/gen_tracing_callbacks.py"
   "tracing.gen" gen_tracing_header LevelZero::level-zero)
-
 
 add_library(pti_view SHARED "${PROJECT_SOURCE_DIR}/src/xpti_adapter.cc"
                             "${PROJECT_SOURCE_DIR}/src/pti.cc"
@@ -208,6 +213,7 @@ endif()
 target_compile_definitions(
   pti_view
   PRIVATE PTI_VIEW_CORE_LIB_NAME=$<TARGET_FILE_NAME:pti>
+          $<$<CONFIG:Debug>:PTI_XPTI_FRAMEWORK_DISPATCHER_NAME=$<TARGET_FILE_NAME:Xpti::xpti>>
           $<IF:$<BOOL:${PTI_ENABLE_LOGGING}>,
           SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE,
           SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO>)
@@ -217,10 +223,61 @@ target_link_libraries(
   PUBLIC
   PRIVATE LevelZero::headers
           spdlog::spdlog
-          ${CMAKE_DL_LIBS})
+          ${CMAKE_DL_LIBS}
+          ${FS_LIB})
+
+# pti_metrics
+add_library(pti_metrics SHARED "${PROJECT_SOURCE_DIR}/src/pti_metrics.cc"
+                               "${PROJECT_SOURCE_DIR}/src/pti_version.cc")
+
+add_library(Pti::pti_metrics ALIAS pti_metrics)
+
+# pti_metrics builds on pti - so all generated files need to be ready
+add_dependencies(pti_metrics pti)
+
+target_include_directories(
+  pti_metrics
+  PUBLIC "$<BUILD_INTERFACE:${PROJECT_BINARY_DIR}>"
+         "$<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>"
+         "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
+         "$<INSTALL_INTERFACE:${PTI_INSTALL_INCLUDE_DIR}>"
+  PRIVATE "${PROJECT_SOURCE_DIR}/src"
+          "${PROJECT_SOURCE_DIR}/src/levelzero"
+          "${PROJECT_SOURCE_DIR}/src/utils")
+
+set_target_properties(
+  pti_metrics
+  PROPERTIES VERSION "${PROJECT_VERSION}"
+             SOVERSION "${PTI_API_SOVERSION}"
+             POSITION_INDEPENDENT_CODE ON
+                   DEFINE_SYMBOL "${PTI_DEFINE_SYMBOL}")
+
+if (WIN32)
+  set_target_properties(
+    pti_metrics
+    PROPERTIES OUTPUT_NAME "pti_metrics-${PROJECT_VERSION_MAJOR}-${PROJECT_VERSION_MINOR}"
+               DEBUG_POSTFIX "d"
+  )
+  AddProjectVersionInfo(pti_metrics)
+endif()
+
+target_compile_definitions(
+  pti_metrics
+  PRIVATE $<$<TARGET_EXISTS:LevelZero::level-zero>:PTI_LEVEL_ZERO=1>
+          $<IF:$<BOOL:${PTI_ENABLE_LOGGING}>,
+          SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE,
+          SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO>)
 
 target_link_libraries(
-	pti_all INTERFACE Pti::pti_view)
+  pti_metrics
+  PUBLIC Threads::Threads
+  PRIVATE LevelZero::level-zero
+          spdlog::spdlog
+          ${CMAKE_DL_LIBS}
+          ${FS_LIB})
+
+target_link_libraries(
+	pti_all INTERFACE Pti::pti_view Pti:pti_metrics)
 
 include(CTest)
 if(BUILD_TESTING AND PTI_BUILD_TESTING)
@@ -229,7 +286,7 @@ endif()
 
 # Targets / Install phase
 export(
-  TARGETS pti_all pti pti_view
+  TARGETS pti_all pti pti_view pti_metrics
   FILE "${CMAKE_CURRENT_BINARY_DIR}/cmake/PtiTargets.cmake"
   NAMESPACE Pti::)
 
@@ -248,7 +305,7 @@ if(PTI_INSTALL)
     DESTINATION "${PTI_INSTALL_CMAKE_DIR}")
 
   install(
-    TARGETS pti_all pti pti_view
+    TARGETS pti_all pti pti_view pti_metrics
     EXPORT PtiTargets
     LIBRARY DESTINATION ${PTI_INSTALL_LIB_DIR}
             COMPONENT Pti_Runtime
@@ -277,11 +334,13 @@ if(PTI_INSTALL)
     DESTINATION "${PTI_INSTALL_CMAKE_DIR}"
     COMPONENT Pti_Development)
 
-  install(
-    FILES "../LICENSE"
-    DESTINATION "${PTI_INSTALL_LIC_DIR}"
-    RENAME "LICENSE.txt"
-    COMPONENT Pti_Doc)
+  if (EXISTS "../LICENSE")
+    install(
+      FILES "../LICENSE"
+      DESTINATION "${PTI_INSTALL_LIC_DIR}"
+      RENAME "LICENSE.txt"
+      COMPONENT Pti_Doc)
+  endif()
 
 
   #
@@ -343,6 +402,7 @@ if(PTI_BUILD_SAMPLES)
  add_subdirectory(samples/vector_sq_add)
  add_subdirectory(samples/onemkl_gemm)
  add_subdirectory(samples/iso3dfd_dpcpp)
+ add_subdirectory(samples/metrics_iso3dfd_dpcpp)
  add_subdirectory(samples/dlworkloads)
 endif()
 

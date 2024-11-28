@@ -895,7 +895,7 @@ macro(FindHeadersPath TARGET L0_GEN_SCRIPT GEN_FILE_NAME custom_target L0_TARGET
   add_custom_target(${custom_target} ALL
                     DEPENDS ${L0_GEN_INC_PATH}/${GEN_FILE_NAME})
   add_custom_command(OUTPUT ${L0_GEN_INC_PATH}/${GEN_FILE_NAME}
-                     COMMAND "${PYTHON_EXECUTABLE}" ${L0_GEN_SCRIPT} ${L0_GEN_INC_PATH} "${L0_INC_PATH}/level_zero")
+                     COMMAND "${PYTHON_EXECUTABLE}" ${L0_GEN_SCRIPT} ${L0_GEN_INC_PATH} "${L0_INC_PATH}/level_zero" "${PROJECT_BINARY_DIR}/include/pti" )
   target_include_directories(${TARGET}
     PUBLIC "$<BUILD_INTERFACE:${L0_GEN_INC_PATH}>")
   add_dependencies(${TARGET}
@@ -1314,5 +1314,85 @@ macro(AddProjectVersionInfo TARGET)
 
     configure_file(${PTI_VERSIONINFO_RC_IN} ${PTI_VERSIONINFO_RC} @ONLY)
     target_sources(${TARGET} PRIVATE ${PTI_VERSIONINFO_RC})
+  endif()
+endmacro()
+
+
+#
+# Check whether to use experimental/filesystem or filesystem.
+#
+# defines `PTI_EXPERIMENTAL_FILESYSTEM` if the platform does not
+# support std::filesystem usage.
+# sets `FS_LIB` with proper library to link (empty if not needed).
+#
+macro(CheckExperimentalFilesystem)
+  if(NOT DEFINED PTI_EXPERIMENTAL_FILESYSTEM AND NOT DEFINED FS_LIB)
+    set(FS_LIB "")
+    cmake_policy(PUSH)
+    cmake_policy(SET CMP0067 NEW)
+    include(CMakePushCheckState)
+    cmake_push_check_state()
+    cmake_reset_check_state()
+    include(CheckCXXSourceCompiles)
+    # Check normal case
+    set(code
+      "#include <filesystem>
+      int main()
+      {
+        return std::filesystem::exists(std::filesystem::temp_directory_path());
+      }")
+    set(CMAKE_REQUIRED_LIBRARIES ${FS_LIB})
+    check_cxx_source_compiles("${code}" COMPILES_STD_FILESYSTEM)
+
+    if(NOT COMPILES_STD_FILESYSTEM)
+      cmake_reset_check_state()
+
+      # Check experimental filesystem case
+      set(code
+        "#include <experimental/filesystem>
+        int main()
+        {
+          return std::experimental::filesystem::exists(std::experimental::filesystem::temp_directory_path());
+        }")
+      set(CMAKE_REQUIRED_LIBRARIES ${FS_LIB})
+      check_cxx_source_compiles("${code}" COMPILES_STD_EXPERIMENTAL_FILESYSTEM)
+    endif()
+
+    # Check experimental filesystem glib case
+    if(NOT COMPILES_STD_FILESYSTEM AND NOT COMPILES_STD_EXPERIMENTAL_FILESYSTEM)
+      cmake_reset_check_state()
+      set(FS_LIB stdc++fs)
+      set(CMAKE_REQUIRED_LIBRARIES ${FS_LIB})
+      check_cxx_source_compiles("${code}"
+        COMPILES_STD_EXPERIMENTAL_FILESYSTEM_LIBSTDCXXFS)
+      if(COMPILES_STD_EXPERIMENTAL_FILESYSTEM_LIBSTDCXXFS)
+        set(COMPILES_STD_EXPERIMENTAL_FILESYSTEM TRUE)
+      endif()
+    endif()
+
+    # Check experimental filesystem LLVM case
+    if(NOT COMPILES_STD_FILESYSTEM AND NOT COMPILES_STD_EXPERIMENTAL_FILESYSTEM_LIBSTDCXXFS)
+      cmake_reset_check_state()
+      set(FS_LIB c++fs)
+      set(CMAKE_REQUIRED_LIBRARIES ${FS_LIB})
+      check_cxx_source_compiles("${code}"
+        COMPILES_STD_EXPERIMENTAL_FILESYSTEM_LIBCXXFS)
+      if(COMPILES_STD_EXPERIMENTAL_FILESYSTEM_LIBCXXFS)
+        set(COMPILES_STD_EXPERIMENTAL_FILESYSTEM TRUE)
+      endif()
+    endif()
+
+    cmake_pop_check_state()
+    cmake_policy(POP)
+
+    if(NOT COMPILES_STD_FILESYSTEM)
+      if(NOT COMPILES_STD_EXPERIMENTAL_FILESYSTEM)
+        message(FATAL_ERROR "C++17 filesystem support is required")
+      endif()
+      set(PTI_EXPERIMENTAL_FILESYSTEM ON)
+    else()
+      set(FS_LIB "") # Clear if we have std::filesystem
+      unset(PTI_EXPERIMENTAL_FILESYSTEM)
+    endif()
   endif()
 endmacro()

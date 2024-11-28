@@ -136,6 +136,11 @@ struct ZeKernelCommandExecutionRecord {
   const char* sycl_func_name_;
   size_t bytes_xfered_;
   size_t value_set_;
+
+  uint32_t callback_id_;
+  uint64_t api_start_time_;
+  uint64_t api_end_time_;
+  ze_result_t result_;
 };
 
 // This structure and thread_local object enables collectors to avoid retrieving pid and tid
@@ -147,6 +152,25 @@ struct PidTidInfo {
 };
 
 inline thread_local PidTidInfo thread_local_pid_tid_info = {utils::GetPid(), utils::GetTid()};
+
+// clang-format off
+// Below table highlights when we will emit special record.
+// PTI_VIEW_SYCL_RUNTIME_CALLS	PTI_VIEW_DEVICE_GPU_KERNEL	PTI_VIEW_LEVEL_ZERO_CALLS	Generate Special Sycl Rec.
+//------------------------------------------------------------------------------------------------------------------------
+// on                                   on                              off                      if no sycl rec present off
+// off                                  on                              on                       no
+// on                                   on                              on                       no
+// on                                   off                             on                       no
+// off                                  off                             on                       no
+// off                                  on                              off                      no
+// on                                   off                             off                      no
+// off                                  off                             off                      no
+//------------------------------------------------------------------------------------------------------------------------
+// clang-format on
+struct SpecialCallsData {
+  uint32_t sycl_rec_present = 0;  // sycl runtime rec is not present.
+  bool zecall_disabled = true;    // zecalls disabled?
+};
 
 //
 // TODO -- refactor 2nd level callbacks so that callbacks are not bound to

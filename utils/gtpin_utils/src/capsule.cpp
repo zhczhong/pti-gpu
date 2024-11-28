@@ -16,6 +16,8 @@
 
 #include "capsule.hpp"
 
+#include <climits>
+
 #include <cmath>
 
 #include "api/gtpin_api.h"
@@ -70,7 +72,7 @@ GED_DATA_TYPE Macro::GetGedIntDataType(size_t sizeBits) {
   return GED_DATA_TYPE_INVALID;
 }
 GED_DATA_TYPE Macro::GetGedIntDataTypeBytes(size_t sizeBytes) {
-  return GetGedIntDataType(sizeBytes * 8);
+  return GetGedIntDataType(sizeBytes * CHAR_BIT);
 }
 GED_DATA_TYPE Macro::GetGedIntDataTypeSigned(size_t sizeBits) {
   switch (sizeBits) {
@@ -89,7 +91,7 @@ GED_DATA_TYPE Macro::GetGedIntDataTypeSigned(size_t sizeBits) {
   return GED_DATA_TYPE_INVALID;
 }
 GED_DATA_TYPE Macro::GetGedIntDataTypeBytesSigned(size_t sizeBytes) {
-  return GetGedIntDataTypeSigned(sizeBytes * 8);
+  return GetGedIntDataTypeSigned(sizeBytes * CHAR_BIT);
 }
 
 uint64_t Macro::GetMaskBySize(size_t sizeBits) {
@@ -100,7 +102,9 @@ uint64_t Macro::GetMaskBySize(size_t sizeBits) {
   return (1ull << sizeBits) - 1;
 }
 
-uint64_t Macro::GetMaskBySizeBytes(size_t sizeBytes) { return Macro::GetMaskBySize(sizeBytes * 8); }
+uint64_t Macro::GetMaskBySizeBytes(size_t sizeBytes) {
+  return Macro::GetMaskBySize(sizeBytes * CHAR_BIT);
+}
 
 GtReg Macro::GetSubReg(const IGtKernelInstrument& instrumentor, size_t regNum, size_t subRegIdx,
                        size_t subRegSizeBytes) {
@@ -133,7 +137,8 @@ GtGenProcedure Procedure::CounterInc(const IGtKernelInstrument& instrumentor,
 
   profileArray.ComputeRelAddress(coder, proc, tempAddrReg, baseAddrReg, dataOffsetBytes);
   if (offsetBytesReg != NullReg()) {
-    coder.ComputeRelAddress(proc, tempAddrReg, tempAddrReg, GtReg(offsetBytesReg, 4, 0), predicate);
+    coder.ComputeRelAddress(proc, tempAddrReg, tempAddrReg,
+                            GtReg(offsetBytesReg, sizeof(uint32_t), 0), predicate);
   }
   proc += insF.MakeAtomicInc(NullReg(), tempAddrReg, GtDataType(counterDataType), execMask)
               .SetPredicate(predicate);
@@ -191,92 +196,24 @@ GtGenProcedure Procedure::AtomicStore(const IGtKernelInstrument& instrumentor,
   return proc;
 }
 
-GtGenProcedure Procedure::ComputeSimdMask(const IGtKernelInstrument& instrumentor, GtReg simdMaskReg,
-                                          bool maskCtrl, uint32_t execMask, GtPredicate pred) {
+GtGenProcedure Procedure::ComputeSimdMask(const IGtKernelInstrument& instrumentor,
+                                          GtReg simdMaskReg, bool maskCtrl, uint32_t execMask,
+                                          GtPredicate pred) {
   GtGenProcedure proc;
-
   instrumentor.Coder().ComputeSimdMask(proc, simdMaskReg, maskCtrl, execMask, pred);
 
   ANNOTATION(proc)
   return proc;
 }
-GtGenProcedure Procedure::ComputeSimdMask(const IGtKernelInstrument& instrumentor, GtReg simdMaskReg,
-                                          const IGtIns& gtpinIns) {
+GtGenProcedure Procedure::ComputeSimdMask(const IGtKernelInstrument& instrumentor,
+                                          GtReg simdMaskReg, const IGtIns& gtpinIns) {
   return Procedure::ComputeSimdMask(instrumentor, simdMaskReg, !gtpinIns.IsWriteMaskEnabled(),
                                     gtpinIns.ExecMask().Bits(), gtpinIns.Predicate());
 }
 
 GtGenProcedure Procedure::IsCacheLineAligned(const IGtKernelInstrument& instrumentor,
                                              GtReg addrRegCheckReg, size_t channelOffset,
-                                             GtReg simdMaskReg, GtReg tempData1Reg,
-                                             GtReg tempData2Reg, size_t mathWidthBytes) {
-  PTI_ASSERT(tempData1Reg.IsValid() && (tempData1Reg.ElementSize() >= mathWidthBytes) &&
-             "Wrong register size");
-  PTI_ASSERT(tempData2Reg.IsValid() && (tempData2Reg.ElementSize() >= mathWidthBytes) &&
-             "Wrong register size");
-
-  const IGtGenCoder& coder = instrumentor.Coder();
-  IGtInsFactory& insF = coder.InstructionFactory();
-  const GED_DATA_TYPE SIMD_DATA_TYPE = Macro::GetGedIntDataTypeBytes(MAX_SIMD_WIDTH_BYTES);
-  const GED_DATA_TYPE MATH_DATA_TYPE = Macro::GetGedIntDataTypeBytes(mathWidthBytes);
-
-  GtReg temp1Reg = {tempData1Reg, static_cast<uint32_t>(mathWidthBytes), 0};
-  GtReg temp2Reg = {tempData2Reg, static_cast<uint32_t>(mathWidthBytes), 0};
-  GtReg firstAddrReg = {addrRegCheckReg,
-                        static_cast<uint32_t>(mathWidthBytes), /*Lower bits of first address*/
-                        0 /*Sub reg num always == 0 for address register*/};
-
-  GtGenProcedure proc;
-
-  proc += insF.MakeMov(tempData1Reg,
-                       GtImm(0, Macro::GetGedIntDataTypeBytes(tempData1Reg.ElementSize())),
-                       EXEC_MASK_1_0);
-
-  /// Next code computes alignment of address.
-  /// temp1Reg == 0 in case of not aligned, temp1Reg == 0x1 in case of aligned
-  proc += insF.MakeAnd(temp1Reg, firstAddrReg, GtImm(0b111111, MATH_DATA_TYPE), EXEC_MASK_1_0);
-  // temp1Reg = (temp1Reg & 0b1111) | (temp1Reg >> 4)
-  proc += insF.MakeShr(temp2Reg, temp1Reg, GtImm(4, MATH_DATA_TYPE), EXEC_MASK_1_0);
-  proc += insF.MakeAnd(temp1Reg, temp1Reg, GtImm(0b1111, MATH_DATA_TYPE), EXEC_MASK_1_0);
-  proc += insF.MakeOr(temp1Reg, temp1Reg, temp2Reg, EXEC_MASK_1_0);
-  // temp1Reg = (temp1Reg & 0b11) | (temp1Reg >> 2)
-  proc += insF.MakeShr(temp2Reg, temp1Reg, GtImm(2, MATH_DATA_TYPE), EXEC_MASK_1_0);
-  proc += insF.MakeAnd(temp1Reg, temp1Reg, GtImm(0b11, MATH_DATA_TYPE), EXEC_MASK_1_0);
-  proc += insF.MakeOr(temp1Reg, temp1Reg, temp2Reg, EXEC_MASK_1_0);
-  // temp1Reg = (temp1Reg & 0b1) | (temp1Reg >> 1)
-  proc += insF.MakeShr(temp2Reg, temp1Reg, GtImm(1, MATH_DATA_TYPE), EXEC_MASK_1_0);
-  proc += insF.MakeAnd(temp1Reg, temp1Reg, GtImm(0b1, MATH_DATA_TYPE), EXEC_MASK_1_0);
-  proc += insF.MakeOr(temp1Reg, temp1Reg, temp2Reg, EXEC_MASK_1_0);
-  // temp1Reg = !temp1Reg[0]
-  proc += insF.MakeXor(temp1Reg, temp1Reg, GtImm(1, MATH_DATA_TYPE), EXEC_MASK_1_0);
-
-  /// Next code checks lane active. temp2Reg == 0: Channel enable, temp2Reg ==
-  /// 1: channel disabled temp2Reg = ( SIMDmask >> channelOffset ) & 0x1
-  proc += insF.MakeShr(temp2Reg, simdMaskReg, GtImm(channelOffset, SIMD_DATA_TYPE), EXEC_MASK_1_0);
-  proc += insF.MakeAnd(temp2Reg, temp2Reg, GtImm(0x1, MATH_DATA_TYPE), EXEC_MASK_1_0);
-
-  /// Channel active & CL aligned
-  proc += insF.MakeAnd(temp1Reg, temp1Reg, temp2Reg, EXEC_MASK_1_0);
-
-  ANNOTATION(proc)
-  return proc;
-}
-
-GtGenProcedure Procedure::IsCacheLineAligned(const IGtKernelInstrument& instrumentor,
-                                             const IGtIns& gtpinIns, GtReg simdMaskReg,
-                                             GtReg tempData1Reg, GtReg tempData2Reg,
-                                             size_t mathWidthBytes) {
-  DcSendMsg msg(gtpinIns.GetGedIns());
-  GtReg addrRegCheckReg = GrfReg(msg.Src0(), 0, mathWidthBytes);
-
-  return Procedure::IsCacheLineAligned(instrumentor, addrRegCheckReg, msg.ChannelOffset(),
-                                       simdMaskReg, tempData1Reg, tempData2Reg, mathWidthBytes);
-}
-
-GtGenProcedure Procedure::IsCacheLineAlignedFlag(const IGtKernelInstrument& instrumentor,
-                                                 GtReg addrRegCheckReg, size_t channelOffset,
-                                                 GtReg simdMaskReg, GtReg tempData1Reg,
-                                                 GtReg flagReg) {
+                                             GtReg simdMaskReg, GtReg tempData1Reg, GtReg flagReg) {
   PTI_ASSERT(addrRegCheckReg.IsValid() && addrRegCheckReg.ElementSize() > 0 && "Invalid register");
   PTI_ASSERT(simdMaskReg.IsValid() && simdMaskReg.ElementSize() > 0 && "Invalid register");
   PTI_ASSERT(tempData1Reg.IsValid() && tempData1Reg.ElementSize() > 0 && "Invalid register");
@@ -291,8 +228,9 @@ GtGenProcedure Procedure::IsCacheLineAlignedFlag(const IGtKernelInstrument& inst
   mathWidthBytes =
       (tempData1Reg.ElementSize() >= mathWidthBytes) ? mathWidthBytes : tempData1Reg.ElementSize();
 
+  const GED_DATA_TYPE mathDataType = Macro::GetGedIntDataTypeBytesSigned(mathWidthBytes);
+
   IGtInsFactory& insF = instrumentor.Coder().InstructionFactory();
-  const GED_DATA_TYPE MATH_DATA_TYPE = Macro::GetGedIntDataTypeBytes(mathWidthBytes);
 
   GtReg tempRegCut = {tempData1Reg, static_cast<uint32_t>(mathWidthBytes), 0};
   GtReg firstAddrRegCut = {addrRegCheckReg,
@@ -305,12 +243,13 @@ GtGenProcedure Procedure::IsCacheLineAlignedFlag(const IGtKernelInstrument& inst
   proc += Macro::Mov(instrumentor, tempData1Reg, GtImm(0));
 
   /// flagReg == 1 in case of not aligned, flagReg == 0 in case of aligned
-  proc += Macro::And(instrumentor, tempRegCut, firstAddrRegCut, GtImm(0b111111));
-  proc += insF.MakeCmp(GED_COND_MODIFIER_z, flagReg, tempRegCut, GtImm(0));
+  proc += Macro::And(instrumentor, tempRegCut, firstAddrRegCut, GtImm(0b111111, mathDataType));
+  proc +=
+      Macro::Cmp(instrumentor, GED_COND_MODIFIER_z, flagReg, tempRegCut, GtImm(0, mathDataType));
 
   /// Check channel active for M0, M16, etc.
-  proc += Macro::Shr(instrumentor, tempRegCut, simdRegCut, GtImm(channelOffset));
-  proc += Macro::And(instrumentor, tempRegCut, tempRegCut, GtImm(0x1));
+  proc += Macro::Shr(instrumentor, tempRegCut, simdRegCut, GtImm(channelOffset, mathDataType));
+  proc += Macro::And(instrumentor, tempRegCut, tempRegCut, GtImm(0x1, mathDataType));
 
   /// Set 0 if not aligned, 1 if channel 0 is active and aligned
   proc += Macro::Mov(instrumentor, tempData1Reg,
@@ -321,14 +260,14 @@ GtGenProcedure Procedure::IsCacheLineAlignedFlag(const IGtKernelInstrument& inst
   return proc;
 }
 
-GtGenProcedure Procedure::IsCacheLineAlignedFlag(const IGtKernelInstrument& instrumentor,
-                                                 const IGtIns& gtpinIns, GtReg simdMaskReg,
-                                                 GtReg tempData1Reg, GtReg flagReg) {
+GtGenProcedure Procedure::IsCacheLineAligned(const IGtKernelInstrument& instrumentor,
+                                             const IGtIns& gtpinIns, GtReg simdMaskReg,
+                                             GtReg tempData1Reg, GtReg flagReg) {
   DcSendMsg msg(gtpinIns.GetGedIns());
   GtReg addrRegCheckReg = GrfReg(msg.Src0(), 0, msg.ElementSize());
 
-  return Procedure::IsCacheLineAlignedFlag(instrumentor, addrRegCheckReg, msg.ChannelOffset(),
-                                           simdMaskReg, tempData1Reg, flagReg);
+  return Procedure::IsCacheLineAligned(instrumentor, addrRegCheckReg, msg.ChannelOffset(),
+                                       simdMaskReg, tempData1Reg, flagReg);
 }
 
 GtGenProcedure Procedure::CalcBaseAddr(const IGtKernelInstrument& instrumentor,
@@ -398,13 +337,12 @@ GtGenProcedure Procedure::AdjustDistributionWithinBounds(const IGtKernelInstrume
 /// This instrumentation makes register allocation. it allocs (1 + execSize) *
 /// addrWidthBytes Uses address == -1 as no address marker. Result, number of
 /// cache lines, is stored in clCounterReg
-#define INVALID_ADDRESS -1
-GtGenProcedure Procedure::CacheLinesCount(const IGtKernelInstrument& instrumentor, GtReg clCounterReg,
-                                          GtReg simdMaskReg, uint32_t execSize,
+GtGenProcedure Procedure::CacheLinesCount(const IGtKernelInstrument& instrumentor,
+                                          GtReg clCounterReg, GtReg simdMaskReg, uint32_t execSize,
                                           GtReg addrRegCheckReg, size_t channelOffset,
                                           const uint32_t addrWidthBytes, GtReg flagReg) {
-  /// check registers for minimal requirements
-  /// Check that clCounter reg is at least DWORD
+  /// TODO: Check registers for minimal requirements
+  /// TODO: Check that clCounter reg is at least DWORD
 
   const IGtGenCoder& coder = instrumentor.Coder();
   IGtInsFactory& insF = coder.InstructionFactory();
@@ -421,7 +359,8 @@ GtGenProcedure Procedure::CacheLinesCount(const IGtKernelInstrument& instrumento
   const GED_DATA_TYPE addrGedType = Macro::GetGedIntDataTypeBytesSigned(addrWidthBytes);
   const VREG_TYPE addrVregType = Macro::GetVregTypeBytes(addrWidthBytes);
 
-  const uint32_t localCounterWidthBytes = MAX_SIMD_WIDTH_BYTES;  // it is used in SIMD mask calc
+  const uint32_t localCounterWidthBytes =
+      GTPIN_UTILS_MAX_SIMD_WIDTH_BYTES;  // it is used in SIMD mask calc
   const GED_DATA_TYPE localCounterGedType =
       Macro::GetGedIntDataTypeBytesSigned(localCounterWidthBytes);
   const VREG_TYPE localCounterVregType = Macro::GetVregTypeBytes(localCounterWidthBytes);
@@ -497,11 +436,10 @@ GtGenProcedure Procedure::CacheLinesCount(const IGtKernelInstrument& instrumento
   ANNOTATION(proc)
   return proc;
 }
-#undef INVALID_ADDRESS
 
-GtGenProcedure Procedure::CacheLinesCount(const IGtKernelInstrument& instrumentor, GtReg clCounterReg,
-                                          GtReg simdMaskReg, const IGtIns& gtpinIns,
-                                          GtReg flagReg) {
+GtGenProcedure Procedure::CacheLinesCount(const IGtKernelInstrument& instrumentor,
+                                          GtReg clCounterReg, GtReg simdMaskReg,
+                                          const IGtIns& gtpinIns, GtReg flagReg) {
   DcSendMsg msg(gtpinIns.GetGedIns());
   GtReg addrRegCheckReg = GrfReg(msg.Src0(), 0, msg.AddrSize());
 
@@ -539,21 +477,22 @@ void Analysis::CacheLineAlignedCounter(Capsule& capsule, const IGtIns& gtpinIns,
   size_t mathWidthBytes = 2;
 
   auto tempReg = capsule.GetMsgData64Reg();
-  /// clear register
-  GtReg clearReg = {tempReg, static_cast<uint32_t>(Macro::GetCounterSizeBytes(instrumentor)), 0};
+  /// clear-register
+  uint32_t counterSizeBytes = Macro::GetCounterSizeBytes(instrumentor);
+  GtReg clearReg = {tempReg, counterSizeBytes, 0};
 
   GtGenProcedure proc;
-  proc += capsule.GetInsFactory().MakeRegZero(clearReg);
+  proc += Macro::Mov(instrumentor, clearReg,
+                     GtImm(0, Macro::GetGedIntDataTypeBytes(counterSizeBytes)), EXEC_MASK_1_0);
   GtReg flagReg = FlagReg(0);
 
   GtReg tempData1Reg = {tempReg, static_cast<uint32_t>(mathWidthBytes), 0};
 
-  proc += Procedure::IsCacheLineAlignedFlag(
-      instrumentor, gtpinIns, capsule.GetSimdMaskReg(gtpinIns), tempData1Reg, flagReg);
+  proc += Procedure::IsCacheLineAligned(instrumentor, gtpinIns, capsule.GetSimdMaskReg(gtpinIns),
+                                        tempData1Reg, flagReg);
 
-  proc += capsule.GetInsFactory().MakeCmp(GED_COND_MODIFIER_z, flagReg, tempData1Reg,
-                                          GtImm(0x0, Macro::GetGedIntDataTypeBytes(mathWidthBytes)),
-                                          EXEC_MASK_1_0);
+  proc += Macro::Cmp(capsule.GetInstrumentor(), GED_COND_MODIFIER_z, flagReg, tempData1Reg,
+                     GtImm(0x0, Macro::GetGedIntDataTypeBytes(mathWidthBytes)), EXEC_MASK_1_0);
 
   proc += Procedure::CounterInc(capsule.GetInstrumentor(), capsule.GetProfileArray(),
                                 capsule.GetBaseAddrReg(), capsule.GetTempAddrReg(), dataOffsetBytes,
@@ -643,7 +582,7 @@ void Analysis::DumpFirstAddresses(Capsule& capsule, const IGtIns& gtpinIns,
     proc += Macro::Mov(capsule.GetInstrumentor(), data64Reg, currAddrReg);
     proc += Procedure::AtomicStore(capsule.GetInstrumentor(), capsule.GetProfileArray(),
                                    capsule.GetBaseAddrReg(), capsule.GetTempAddrReg(), data64Reg,
-                                   addrArrayOffsetBytes + 8 * i);
+                                   addrArrayOffsetBytes + i * CHAR_BIT);
   }
 
   ANNOTATION(proc)
@@ -684,7 +623,8 @@ GtReg Capsule::GetBaseAddrReg() {
 }
 GtReg Capsule::GetSimdMaskReg(bool maskCtrl, uint32_t execMask, GtPredicate pred) {
   if (!m_simdMaskReg.IsValid()) {
-    m_simdMaskReg = m_vregs.MakeScratch(GtVregType::MakeBySize(MAX_SIMD_WIDTH_BYTES));
+    m_simdMaskReg = m_vregs.MakeScratch(
+        GtVregType::MakeBySize(4));  // 4 bytes due to requirements of IGtGenCoder::ComputeSimdMask
     m_proc += Procedure::ComputeSimdMask(m_instrumentor, m_simdMaskReg, maskCtrl, execMask, pred);
   }
   return m_simdMaskReg;

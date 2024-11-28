@@ -1,4 +1,5 @@
 include(macros)
+RemoveNDebugFlag() # For SYCL Function Name
 CheckIfSyclIsAvailable()
 GetGTest()
 
@@ -134,6 +135,35 @@ if(HAVE_SYCL)
   target_link_libraries(sycl_queue_id PUBLIC Pti::pti_view GTest::gtest_main
     LevelZero::headers)
 
+  add_executable(zegemm_suite main_zegemm_fixture.cc)
+
+  target_include_directories(
+    zegemm_suite
+    PUBLIC "${CMAKE_BINARY_DIR}" "${PROJECT_SOURCE_DIR}/include"
+         "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/src/levelzero"
+         "${PROJECT_SOURCE_DIR}/samples/samples_utilities"
+    PRIVATE "${PROJECT_SOURCE_DIR}/src/utils")
+
+  add_custom_command(
+    TARGET zegemm_suite
+    PRE_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${PROJECT_SOURCE_DIR}/test/gemm.spv ${PTI_TEST_BIN_DIR}/gemm.spv)
+  add_custom_command(
+    TARGET zegemm_suite
+    PRE_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${PROJECT_SOURCE_DIR}/test/gemm.cl ${PTI_TEST_BIN_DIR}/gemm.cl)
+
+  target_compile_options(zegemm_suite  PUBLIC -fsycl -gline-tables-only)
+  target_link_options(zegemm_suite PUBLIC -fsycl -gline-tables-only)
+
+  target_link_libraries(zegemm_suite PUBLIC Pti::pti_view
+                                            GTest::gtest_main
+                                            GTest::gmock
+                                            LevelZero::level-zero
+                                            ${FS_LIB})
+
   add_executable(multi_threaded_submission multi_threaded_submission.cc)
 
   target_include_directories(
@@ -152,6 +182,7 @@ if(HAVE_SYCL)
   add_executable(dpc_gemm_threaded_profiled perf_dpc_gemm_threaded.cc)
   add_executable(dpc_gemm_threaded_baseline perf_dpc_gemm_threaded.cc)
   add_executable(dpc_gemm_threaded_linkonly perf_dpc_gemm_threaded.cc)
+  add_executable(dpc_gemm_threaded_overhead perf_dpc_gemm_threaded.cc)
 
   target_include_directories(
     dpc_gemm_threaded_profiled
@@ -159,16 +190,26 @@ if(HAVE_SYCL)
          "${PROJECT_SOURCE_DIR}/samples/samples_utilities"
          "${PROJECT_SOURCE_DIR}/src/utils")
 
+ target_include_directories(
+    dpc_gemm_threaded_overhead
+    PUBLIC "${CMAKE_BINARY_DIR}" "${PROJECT_SOURCE_DIR}/include"
+         "${PROJECT_SOURCE_DIR}/samples/samples_utilities"
+         "${PROJECT_SOURCE_DIR}/src/utils")
+
+
   target_compile_options(dpc_gemm_threaded_profiled PRIVATE -fsycl -gline-tables-only)
   target_compile_options(dpc_gemm_threaded_baseline PRIVATE -fsycl -gline-tables-only)
   target_compile_options(dpc_gemm_threaded_linkonly PRIVATE -fsycl -gline-tables-only)
+  target_compile_options(dpc_gemm_threaded_overhead PRIVATE -fsycl -gline-tables-only)
 
   target_compile_definitions(dpc_gemm_threaded_baseline PRIVATE NO_PTI)
   target_compile_definitions(dpc_gemm_threaded_linkonly PRIVATE NO_PTI)
+  target_compile_definitions(dpc_gemm_threaded_overhead PRIVATE CAPTURE_OVERHEAD)
 
   target_link_options(dpc_gemm_threaded_profiled PRIVATE -fsycl -gline-tables-only)
   target_link_options(dpc_gemm_threaded_baseline PRIVATE -fsycl -gline-tables-only)
   target_link_options(dpc_gemm_threaded_linkonly PRIVATE -fsycl -gline-tables-only)
+  target_link_options(dpc_gemm_threaded_overhead PRIVATE -fsycl -gline-tables-only)
 
   target_link_libraries(dpc_gemm_threaded_profiled PUBLIC Threads::Threads Pti::pti_view
                         LevelZero::level-zero)
@@ -177,6 +218,9 @@ if(HAVE_SYCL)
                         LevelZero::level-zero)
 
   target_link_libraries(dpc_gemm_threaded_baseline PUBLIC Threads::Threads)
+
+  target_link_libraries(dpc_gemm_threaded_overhead PUBLIC Threads::Threads Pti::pti_view
+                        LevelZero::level-zero)
 
 
   gtest_discover_tests(
@@ -229,6 +273,12 @@ if(HAVE_SYCL)
     PROPERTIES LABELS "functional")
 
   gtest_discover_tests(
+    zegemm_suite
+    DISCOVERY_TIMEOUT 60
+    TEST_LIST ZEGEMM_SUITE_TEST_LIST
+    PROPERTIES LABELS "unit")
+
+  gtest_discover_tests(
     multi_threaded_submission
     DISCOVERY_TIMEOUT 60
     TEST_LIST TIMESTAMPS_CORRECTNESS_LIST
@@ -239,41 +289,29 @@ if(HAVE_SYCL)
   add_test(
     NAME perf-profiling-overhead
     COMMAND
-      ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/perf_test.py "${PTI_TEST_BIN_DIR}" 60 profiled
+      ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/perf_test.py "${PTI_TEST_BIN_DIR}" 66 profiled
   )
 
   add_test(
     NAME perf-link-overhead
     COMMAND
-      ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/perf_test.py "${PTI_TEST_BIN_DIR}" 3 linkonly
+      ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/perf_test.py "${PTI_TEST_BIN_DIR}" 8 linkonly
   )
+
+  add_test(
+    NAME perf-overhead-view
+    COMMAND
+      ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/perf_test.py "${PTI_TEST_BIN_DIR}" 50 overhead
+  )
+
 
   set_tests_properties(
     perf-profiling-overhead perf-link-overhead PROPERTIES LABELS "performance")
 
+  set_tests_properties(
+    perf-overhead-view PROPERTIES LABELS "performance;functional")
+
 endif()
-
-add_executable(zegemm_suite main_zegemm_fixture.cc)
-
-target_include_directories(
-  zegemm_suite
-  PUBLIC "${CMAKE_BINARY_DIR}" "${PROJECT_SOURCE_DIR}/include"
-         "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/src/levelzero"
-  PRIVATE "${PROJECT_SOURCE_DIR}/src/utils")
-
-add_custom_command(
-  TARGET zegemm_suite
-  PRE_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          ${PROJECT_SOURCE_DIR}/test/gemm.spv ${PTI_TEST_BIN_DIR}/gemm.spv)
-add_custom_command(
-  TARGET zegemm_suite
-  PRE_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          ${PROJECT_SOURCE_DIR}/test/gemm.cl ${PTI_TEST_BIN_DIR}/gemm.cl)
-
-target_link_libraries(zegemm_suite PUBLIC Pti::pti_view GTest::gtest_main
-                                          GTest::gmock LevelZero::level-zero)
 
 
 
@@ -306,7 +344,8 @@ if (HAVE_SYCL AND TARGET unified-runtime::loader)
                                             GTest::gtest_main
                                             GTest::gmock
                                             LevelZero::level-zero
-                                            unified-runtime::loader)
+                                            unified-runtime::loader
+                                            ${FS_LIB})
   gtest_discover_tests(
     urgemm_suite
     DISCOVERY_TIMEOUT 60
@@ -337,7 +376,8 @@ target_include_directories(
 target_link_libraries(assert_exception_test PUBLIC Pti::pti_view GTest::gtest_main
                                                    spdlog::spdlog
                                                    LevelZero::level-zero
-                                                   ${CMAKE_DL_LIBS})
+                                                   ${CMAKE_DL_LIBS}
+                                                   ${FS_LIB})
 
 add_executable(view_gpu_local_test view_gpu_local_test.cc)
 
@@ -349,12 +389,13 @@ target_link_libraries(view_gpu_local_test PUBLIC Pti::pti_view
   GTest::gtest_main
   LevelZero::headers)
 
+add_executable(pti_assert_test pti_assert_test.cc)
 
-gtest_discover_tests(
-  zegemm_suite
-  DISCOVERY_TIMEOUT 60
-  TEST_LIST ZEGEMM_SUITE_TEST_LIST
-  PROPERTIES LABELS "unit")
+target_include_directories(pti_assert_test PUBLIC
+  "${PROJECT_SOURCE_DIR}/src/utils")
+
+target_link_libraries(pti_assert_test PUBLIC GTest::gtest_main)
+
 gtest_discover_tests(
   view_record_test
   DISCOVERY_TIMEOUT 60
@@ -405,8 +446,17 @@ if(PTI_BUILD_SAMPLES AND HAVE_SYCL)
   add_test(NAME run-onemkl_gemm_exe COMMAND onemkl_gemm_exe)
   add_test(NAME run-vec_sqadd COMMAND vec_sqadd)
   add_test(NAME run-iso COMMAND iso3dfd 256 256 256 32 8 64 10 gpu)
+  # run-metrics-iso is sporadically failing on windows due to a bug in L0. Disabling on Windows until
+  # issue is resolved
+  if(UNIX)
+    add_test(NAME run-metrics-iso COMMAND metrics_iso3dfd 256 256 256 32 8 64 10 gpu)
+
+    set_tests_properties(
+      run-metrics-iso PROPERTIES ENVIRONMENT "ZET_ENABLE_METRICS=1" LABELS "functional;samples;hw-metrics")
+  endif()
 
   set_tests_properties(
     mt-awk-test mt-awk-test-immediate run-dlworkload run-dpc_gemm run-onemkl_gemm_exe run-vec_sqadd
     run-iso PROPERTIES LABELS "functional;samples")
+
 endif()

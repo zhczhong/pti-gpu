@@ -22,8 +22,6 @@
 #include "pti/pti_view.h"
 #include "samples_utils.h"
 #include "utils.h"
-#else
-#define NSEC_IN_SEC 1000000000
 #endif
 
 #define A_VALUE 0.128f
@@ -115,12 +113,17 @@ constexpr auto kRequestedRecordCount = 1'000ULL;
 constexpr auto kRequestedBufferSize = kRequestedRecordCount * sizeof(pti_view_record_kernel);
 
 std::atomic<uint64_t> g_record_count{0};
+#if defined(CAPTURE_OVERHEAD)
+std::atomic<uint64_t> overhead_time_ns{0};
+#endif
 
 void StartTracing() {
   PTI_THROW(ptiViewEnable(PTI_VIEW_DEVICE_GPU_KERNEL));
   PTI_THROW(ptiViewEnable(PTI_VIEW_DEVICE_GPU_MEM_COPY));
   PTI_THROW(ptiViewEnable(PTI_VIEW_DEVICE_GPU_MEM_FILL));
+#if !defined(CAPTURE_OVERHEAD)
   PTI_THROW(ptiViewEnable(PTI_VIEW_SYCL_RUNTIME_CALLS));
+#endif /* ! CAPTURE_OVERHEAD */
   PTI_THROW(ptiViewEnable(PTI_VIEW_COLLECTION_OVERHEAD));
 }
 
@@ -128,7 +131,9 @@ void StopTracing() {
   PTI_THROW(ptiViewDisable(PTI_VIEW_DEVICE_GPU_KERNEL));
   PTI_THROW(ptiViewDisable(PTI_VIEW_DEVICE_GPU_MEM_COPY));
   PTI_THROW(ptiViewDisable(PTI_VIEW_DEVICE_GPU_MEM_FILL));
+#if !defined(CAPTURE_OVERHEAD)
   PTI_THROW(ptiViewDisable(PTI_VIEW_SYCL_RUNTIME_CALLS));
+#endif /* ! CAPTURE_OVERHEAD */
   PTI_THROW(ptiViewDisable(PTI_VIEW_COLLECTION_OVERHEAD));
 }
 
@@ -148,20 +153,6 @@ void ParseBuffer(unsigned char* buf, std::size_t buf_size, std::size_t valid_buf
   }
   pti_view_record_base* ptr = nullptr;
 
-  [[maybe_unused]] auto validate_timestamps = [](uint64_t count, ...) {
-    va_list args;
-    va_start(args, count);
-    if (1LU == count) return;
-    uint64_t prev_stamp = va_arg(args, uint64_t);
-    uint64_t next_stamp = 0LU;
-    for (uint64_t i = 1; i < count; ++i) {
-      next_stamp = va_arg(args, uint64_t);
-      assert(prev_stamp <= next_stamp);
-      prev_stamp = next_stamp;
-    }
-    va_end(args);
-    return;
-  };
   while (true) {
     auto buf_status = ptiViewGetNextRecord(buf, valid_buf_size, &ptr);
     if (buf_status == pti_result::PTI_STATUS_END_OF_BUFFER) {
@@ -175,8 +166,16 @@ void ParseBuffer(unsigned char* buf, std::size_t buf_size, std::size_t valid_buf
       std::cerr << "Found Error Parsing Records from PTI" << '\n';
       break;
     }
-#if defined(RECORD_PARSE_AND_PRINT)
+#if defined(CAPTURE_OVERHEAD)
     switch (ptr->_view_kind) {
+      case pti_view_kind::PTI_VIEW_COLLECTION_OVERHEAD: {
+        pti_view_record_overhead* record = reinterpret_cast<pti_view_record_overhead*>(ptr);
+        overhead_time_ns += record->_overhead_duration_ns;
+        // std::cout << " ======== Overhead Time: " << record->_overhead_duration_ns << " ns"
+        //         << "\t\t API Id: " << record->_api_id << '\n';
+        break;
+      }
+#if defined(RECORD_PARSE_AND_PRINT)
       case pti_view_kind::PTI_VIEW_INVALID: {
         std::cout << "Found Invalid Record" << '\n';
         break;
@@ -187,13 +186,6 @@ void ParseBuffer(unsigned char* buf, std::size_t buf_size, std::size_t valid_buf
                   << '\n';
         std::cout << "Found Sycl Runtime Record" << '\n';
         samples_utils::dump_record(reinterpret_cast<pti_view_record_sycl_runtime*>(ptr));
-        break;
-      }
-      case pti_view_kind::PTI_VIEW_COLLECTION_OVERHEAD: {
-        std::cout << "---------------------------------------------------"
-                     "-----------------------------"
-                  << '\n';
-        samples_utils::dump_record(reinterpret_cast<pti_view_record_overhead*>(ptr));
         break;
       }
       case pti_view_kind::PTI_VIEW_EXTERNAL_CORRELATION: {
@@ -215,8 +207,13 @@ void ParseBuffer(unsigned char* buf, std::size_t buf_size, std::size_t valid_buf
         std::cout << "---------------------------------------------------"
                      "-----------------------------"
                   << '\n';
-        validate_timestamps(4, p_memory_rec->_append_timestamp, p_memory_rec->_submit_timestamp,
-                            p_memory_rec->_start_timestamp, p_memory_rec->_end_timestamp);
+        auto issues = samples_utils::ValidateTimestamps(
+            p_memory_rec->_append_timestamp, p_memory_rec->_submit_timestamp,
+            p_memory_rec->_start_timestamp, p_memory_rec->_end_timestamp);
+        if (issues) {
+          std::cerr << "Memcopy Timestamp error on line: " << __LINE__ << '\n';
+          std::exit(EXIT_FAILURE);
+        }
         break;
       }
       case pti_view_kind::PTI_VIEW_DEVICE_GPU_MEM_FILL: {
@@ -231,8 +228,13 @@ void ParseBuffer(unsigned char* buf, std::size_t buf_size, std::size_t valid_buf
         std::cout << "---------------------------------------------------"
                      "-----------------------------"
                   << '\n';
-        validate_timestamps(4, p_memory_rec->_append_timestamp, p_memory_rec->_submit_timestamp,
-                            p_memory_rec->_start_timestamp, p_memory_rec->_end_timestamp);
+        auto issues = samples_utils::ValidateTimestamps(
+            p_memory_rec->_append_timestamp, p_memory_rec->_submit_timestamp,
+            p_memory_rec->_start_timestamp, p_memory_rec->_end_timestamp);
+        if (issues) {
+          std::cerr << "Memfill Timestamp error on line: " << __LINE__ << '\n';
+          std::exit(EXIT_FAILURE);
+        }
         break;
       }
       case pti_view_kind::PTI_VIEW_DEVICE_GPU_KERNEL: {
@@ -246,18 +248,22 @@ void ParseBuffer(unsigned char* buf, std::size_t buf_size, std::size_t valid_buf
         std::cout << "---------------------------------------------------"
                      "-----------------------------"
                   << '\n';
-        validate_timestamps(6, p_kernel_rec->_sycl_task_begin_timestamp,
-                            p_kernel_rec->_sycl_enqk_begin_timestamp,
-                            p_kernel_rec->_append_timestamp, p_kernel_rec->_submit_timestamp,
-                            p_kernel_rec->_start_timestamp, p_kernel_rec->_end_timestamp);
+        auto issues = samples_utils::ValidateTimestamps(
+            p_kernel_rec->_sycl_task_begin_timestamp, p_kernel_rec->_sycl_enqk_begin_timestamp,
+            p_kernel_rec->_append_timestamp, p_kernel_rec->_submit_timestamp,
+            p_kernel_rec->_start_timestamp, p_kernel_rec->_end_timestamp);
+        if (issues) {
+          std::cerr << "Kernel Timestamp error on line: " << __LINE__ << '\n';
+          std::exit(EXIT_FAILURE);
+        }
         break;
       }
+#endif  // RECORD_PARSE_AND_PRINT
       default: {
-        std::cerr << "This shouldn't happen" << '\n';
         break;
       }
     }
-#endif  // RECORD_PARSE_AND_PRINT
+#endif  // CAPTURE_OVERHEAD
   }
   samples_utils::AlignedDealloc(buf);
 }
@@ -378,19 +384,32 @@ int main(int argc, char* argv[]) {
         th.join();
       }
     }
+#if defined(NO_PTI)
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<float> time = end - start;
     auto gemm_count = thread_count * repeat_count;
+#endif /* NO_PTI */
 
 #if !defined(NO_PTI)
     StopTracing();
     PTI_THROW(ptiFlushAllViews());
+    auto end = std::chrono::steady_clock::now();
+    std::chrono::duration<float> time = end - start;
+    auto gemm_count = thread_count * repeat_count;
     std::cout << "-- PTI tracing was enabled, Record count: " << g_record_count << '\n';
-#endif
+#if defined(CAPTURE_OVERHEAD)
+    std::cout << "-- For Overhead View test - only GPU ops and Overhead View are ON (not Sycl) "
+              << '\n';
+    std::cout << "-- Summed from Overhead View records Overhead time: "
+              << static_cast<float>(overhead_time_ns) / static_cast<float>(NSEC_IN_SEC) << " sec"
+              << '\n';
+#endif /* CAPTURE_OVERHEAD */
+#endif /* ! NO_PTI */
 
     std::cout << "-- Total execution time: " << time.count() << " sec" << std::endl;
-    std::cout << "-- Throughput: " << (int)((float)gemm_count / time.count()) << " gemms of size "
-              << size << "x" << size << " in sec " << std::endl;
+    std::cout << "-- Throughput: "
+              << static_cast<int>(static_cast<float>(gemm_count) / time.count())
+              << " gemms of size " << size << "x" << size << " in sec" << std::endl;
 
   } catch (const sycl::exception& e) {
     std::cerr << "Error: Exception while executing SYCL " << e.what() << '\n';

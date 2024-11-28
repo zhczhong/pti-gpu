@@ -7,6 +7,7 @@
 #define SAMPLES_UTILS_H_
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 
 #include "pti/pti_view.h"
@@ -60,6 +61,30 @@ template <typename T>
 template <typename T>
 inline void AlignedDealloc(T* buf_ptr) {
   return AlignedDealloc<T>(buf_ptr, kDefaultPtiBufferAlignment);
+}
+
+template <typename... T>
+constexpr std::size_t ValidateTimestamps(T... args) {
+  using TimestampType = std::common_type_t<T...>;
+  constexpr auto count = sizeof...(args);
+  static_assert(count > 1, "Must provide more than one timestamp to validate");
+  std::size_t found_issues = 0;
+  TimestampType prev_stamp = 0;
+
+  // Use fold expressions to find issues with timestamps
+  // https://en.cppreference.com/w/cpp/language/fold
+  // this could probably be simplified if we do not care about the number of
+  // timestamp issues (we might be able to remove the lambda).
+  (
+      [&] {
+        auto next_stamp = args;
+        if (!(prev_stamp <= next_stamp)) {
+          found_issues++;
+        }
+        prev_stamp = next_stamp;
+      }(),
+      ...);
+  return found_issues;
 }
 
 //
@@ -216,6 +241,19 @@ void dump_record(pti_view_record_memory_fill* record) {
   std::cout << "Memory Value for Set: " << record->_value_for_set << '\n';
   std::cout << "Correlation Id: " << std::dec << record->_correlation_id << '\n';
   std::cout << "Memory Fill Type: " << std::dec << record->_mem_type << '\n';
+}
+
+void dump_record(pti_view_record_zecalls* record) {
+  if (NULL == record) return;
+  const char* pName = nullptr;
+  PTI_THROW(ptiViewGetCallbackIdName(record->_callback_id, &pName));
+  std::cout << "ZeCall Function Name: " << pName << '\n';
+  std::cout << "ZeCall Function CBID: " << record->_callback_id << '\n';
+  std::cout << "ZeCall Start Time: " << record->_start_timestamp << '\n';
+  std::cout << "  ZeCall End Time: " << record->_end_timestamp << '\n';
+  std::cout << "ZeCall Process Id: " << record->_process_id << '\n';
+  std::cout << "ZeCall Thread Id: " << record->_thread_id << '\n';
+  std::cout << "ZeCall Correlation Id: " << record->_correlation_id << '\n';
 }
 
 void dump_record(pti_view_record_sycl_runtime* record) {
